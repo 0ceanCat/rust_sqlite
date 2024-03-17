@@ -5,6 +5,7 @@ extern crate core;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::os::windows::fs::FileExt;
+use std::process::{exit, ExitCode};
 use std::ptr;
 use regex::Regex;
 use crate::config::*;
@@ -36,7 +37,11 @@ impl Pager {
         match r {
             Ok(file) => {
                 let size = file.metadata().unwrap().len() as usize;
-                let mut total_pages = size.div_ceil(PAGE_SIZE);
+                if size % PAGE_SIZE != 0 {
+                println!("Db file is not a whole number of pages. Corrupt file.");
+                exit(1);
+              }
+                let mut total_pages = size / PAGE_SIZE;
                 Pager {
                     pages: Vec::with_capacity(TABLE_MAX_PAGES),
                     fd: file,
@@ -50,17 +55,79 @@ impl Pager {
         }
     }
 
-    fn get_page(&mut self, page_num: usize) -> &mut Page {
-        let page = self.pages.get(page_num);
+    fn get_page(&mut self, page_index: usize) -> &mut Page {
+        let page = self.pages.get(page_index);
         if page.is_none() {
-            if self.page_in_disk(page_num) {
-                let loaded_page = self.read_page_from_disk((page_num * PAGE_SIZE) as u64);
+            if self.page_in_disk(page_index) {
+                let loaded_page = self.read_page_from_disk((page_index * PAGE_SIZE) as u64);
                 self.pages.push(loaded_page);
             } else {
                 self.pages.push(Page::new_page());
+                self.total_pages += 1;
             }
         }
-        self.pages.get_mut(page_num).unwrap()
+        self.pages.get_mut(page_index).unwrap()
+    }
+
+    pub(crate) fn leaf_node_cells_num(&mut self, page_index: usize) -> usize {
+        let page = self.get_page(page_index);
+        unsafe {
+            let page_ptr = page.content.as_ptr().offset(LEAF_NODE_NUM_CELLS_OFFSET as isize);
+            let mut cells_num: usize = 0;
+            ptr::copy_nonoverlapping(
+                page_ptr,
+                &mut cells_num as *mut usize as *mut u8,
+                LEAF_NODE_NUM_CELLS_SIZE,
+            );
+            cells_num
+        }
+    }
+
+    pub(crate) fn increment_leaf_node_cells_num(&mut self, page_index: usize) {
+        let page = self.get_page(page_index);
+        unsafe {
+            let page_ptr = page.content.as_mut_ptr().offset(LEAF_NODE_NUM_CELLS_OFFSET as isize);
+            let mut cells_num: usize = 0;
+            ptr::copy_nonoverlapping(
+                page_ptr,
+                &mut cells_num as *mut usize as *mut u8,
+                LEAF_NODE_NUM_CELLS_SIZE,
+            );
+            cells_num += 1;
+            ptr::copy_nonoverlapping(
+                &mut cells_num as *mut usize as *mut u8,
+                page_ptr,
+                LEAF_NODE_NUM_CELLS_SIZE,
+            );
+        }
+    }
+
+    pub(crate) fn set_leaf_node_cell_key(&mut self, page_index: usize, cell_index: usize, key: usize) {
+        let ptr = self.leaf_node_cell(page_index, cell_index);
+        unsafe {
+            ptr::copy_nonoverlapping(
+                &key as *const usize as *mut u8,
+                ptr,
+                LEAF_NODE_KEY_SIZE,
+            );
+        }
+    }
+
+    pub(crate) fn leaf_node_cell(&mut self, page_index: usize, cell_index: usize) -> *mut u8 {
+        let page = self.get_page(page_index);
+        unsafe {
+            let page_ptr = page.content
+                                        .as_mut_ptr()
+                                        .offset((LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE) as isize);
+            page_ptr
+        }
+    }
+
+    pub(crate) fn leaf_node_value(&mut self, page_index: usize, cell_index: usize) -> *mut u8 {
+        let ptr = self.leaf_node_cell(page_index, cell_index);
+        unsafe {
+            ptr.add(LEAF_NODE_KEY_SIZE)
+        }
     }
 
     fn read_page_from_disk(&self, offset: u64) -> Page {
@@ -73,22 +140,30 @@ impl Pager {
         self.total_pages > page_num
     }
 
-    fn flush_page_to_disk(&mut self, page_num: usize, size_to_write: usize) {
-        let page = &self.pages[page_num];
-        self.fd.seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64)).unwrap();
-        self.fd.write(&page.content[..size_to_write]).unwrap();
+    fn flush_page_to_disk(&mut self, page_num: usize) -> bool{
+        let page_op = self.pages.get(page_num);
+        match page_op {
+            None => {
+                false
+            }
+            Some(page) => {
+                self.fd.seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64)).unwrap();
+                self.fd.write(&page.content).unwrap();
+                true
+            }
+        }
     }
 }
 
 pub struct Table {
-    pub num_rows: usize,
+    pub root_page_index: usize,
     pub pager: Pager,
 }
 
 impl Table {
     pub(crate) fn new(pager: Pager) -> Table {
         Table {
-            num_rows: pager.size / ROW_SIZE,
+            root_page_index: 0,
             pager,
         }
     }
@@ -103,37 +178,28 @@ impl Table {
         }
     }
 
-    pub(crate) fn is_full(&self) -> bool {
-        self.num_rows >= TABLE_MAX_ROWS
-    }
-
     pub(crate) fn flush_to_disk(mut self) {
-        let full_pages = self.num_rows / PAGE_SIZE;
-        for x in 0 .. full_pages {
-            self.pager.flush_page_to_disk(x, PAGE_SIZE)
-        }
-
-        let additional_rows = self.num_rows % ROWS_PER_PAGE;
-        if additional_rows > 0 {
-            let page_num = full_pages;
-            self.pager.flush_page_to_disk(page_num, ROW_SIZE * additional_rows);
+        for x in 0..TABLE_MAX_PAGES {
+            if !self.pager.flush_page_to_disk(x) {
+                break
+            }
         }
     }
 }
 
 struct Page {
-    content: [u8; PAGE_SIZE]
+    content: [u8; PAGE_SIZE],
 }
 
 impl Page {
     fn new_page() -> Page {
-        Page{
+        Page {
             content: [0; PAGE_SIZE]
         }
     }
 
     fn from(b: [u8; PAGE_SIZE]) -> Page {
-        Page{
+        Page {
             content: b
         }
     }
@@ -281,7 +347,7 @@ pub fn execute_insert(statement: &Statement, mut cursor: Cursor) -> ExecutionRes
     let row_to_insert = &statement.row;
 
     let row = row_to_insert.as_ref().unwrap();
-    cursor.insert_row(row);
+    cursor.insert_row(1, row);
 
     ExecutionResult::ExecutionSuccess
 }

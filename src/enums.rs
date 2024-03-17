@@ -18,3 +18,8 @@ pub(crate) enum StatementType {
     StatementInsert,
     StatementSelect,
 }
+
+pub(crate) enum NodeType{
+    Internal = 0,
+    Leaf = 1
+}
