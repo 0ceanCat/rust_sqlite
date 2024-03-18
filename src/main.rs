@@ -6,10 +6,8 @@ mod enums;
 use std::process::exit;
 use core::*;
 use enums::*;
-use crate::cursor::Cursor;
-
 fn main() -> Result<(), &'static str> {
-    let file_name = "./db";
+   let file_name = "./db";
     let pager = Pager::open(file_name);
     let mut table = Table::new(pager);
     loop {
