@@ -1,3 +1,4 @@
+use std::process::exit;
 use std::ptr;
 use crate::config::{LEAF_NODE_CELL_SIZE, LEAF_NODE_LEFT_SPLIT_COUNT, LEAF_NODE_MAX_CELLS, LEAF_NODE_RIGHT_SPLIT_COUNT};
 use crate::core::{Pager, Row, Table};
@@ -76,12 +77,10 @@ impl<'a> Cursor<'a> {
 
     fn insert(&mut self, page:*mut u8, num_cells: usize, key: usize, row: &Row) {
         if self.cell_index < num_cells {
-            for i in (self.cell_index + 1..=num_cells).rev() {
-                unsafe {
-                    ptr::copy_nonoverlapping(Pager::leaf_node_cell(page, i - 1),
-                                             Pager::leaf_node_cell(page, i),
-                                             LEAF_NODE_CELL_SIZE)
-                }
+            unsafe {
+                ptr::copy(Pager::leaf_node_cell(page, self.cell_index),
+                                         Pager::leaf_node_cell(page, self.cell_index + 1),
+                                         LEAF_NODE_CELL_SIZE * (num_cells - self.cell_index + 1))
             }
         }
         Pager::set_leaf_node_cell_key(page, self.cell_index, key);
@@ -94,6 +93,7 @@ impl<'a> Cursor<'a> {
         let old_node = self.table.pager.get_page(self.page_index);
         let new_page_index = self.table.pager.get_unused_page_num();
         let new_node = self.table.pager.get_page(new_page_index);
+        Pager::initialize_leaf_node(new_node);
 
         for i in (0..=LEAF_NODE_MAX_CELLS).rev() {
             let destination_node;
@@ -108,7 +108,7 @@ impl<'a> Cursor<'a> {
             if i == self.cell_index {
                 Pager::set_leaf_node_cell_key(destination_node, self.cell_index, key);
                 row.serialize_row(cell_pointer);
-            } else if (i > self.cell_index) {
+            } else if i > self.cell_index {
                 unsafe {
                     ptr::copy_nonoverlapping(Pager::leaf_node_cell(old_node, i - 1), cell_pointer, LEAF_NODE_CELL_SIZE);
                 }
@@ -122,12 +122,12 @@ impl<'a> Cursor<'a> {
         Pager::set_leaf_node_cells_num(old_node, LEAF_NODE_LEFT_SPLIT_COUNT);
         Pager::set_leaf_node_cells_num(new_node, LEAF_NODE_RIGHT_SPLIT_COUNT);
 
-        /*if self.is_node_root(old_node) {
-            return self.table.create_new_root(new_page_num);
+        if Pager::is_root_node(old_node) {
+            return self.table.create_new_root(new_page_index);
         } else {
             println!("Need to implement updating parent after split\n");
             exit(1);
-        }*/
+        }
     }
 
     pub(crate) fn is_end(&self) -> bool {
@@ -137,8 +137,4 @@ impl<'a> Cursor<'a> {
     pub(crate) fn is_full(&self) -> bool {
         false
     }
-
-    /*fn is_node_root(&self, ptr:&Page) -> bool {
-        self.table.pager.get_node_type(ptr) == Internal
-    }*/
 }

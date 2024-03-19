@@ -82,11 +82,11 @@ impl Pager {
 
     pub(crate) fn get_leaf_node_cells_num(page: *mut u8) -> usize {
         unsafe {
-            let page_ptr = page.offset(LEAF_NODE_NUM_CELLS_OFFSET as isize);
-            let mut cells_num: usize = 0;
+            let page_ptr = page.add(LEAF_NODE_NUM_CELLS_OFFSET);
+            let cells_num: usize = 0;
             ptr::copy_nonoverlapping(
                 page_ptr,
-                &mut cells_num as *mut usize as *mut u8,
+                &cells_num as *const usize as *mut u8,
                 LEAF_NODE_NUM_CELLS_SIZE,
             );
             cells_num
@@ -95,11 +95,10 @@ impl Pager {
 
     pub(crate) fn set_leaf_node_cells_num(page: *mut u8, num: usize) {
         unsafe {
-            let page_ptr = page.offset(LEAF_NODE_NUM_CELLS_OFFSET as isize);
-            let mut num = num;
+            let page_ptr = page.add(LEAF_NODE_NUM_CELLS_OFFSET);
             ptr::copy_nonoverlapping(
                 page_ptr,
-                &mut num as *const usize as *mut u8,
+                &num as *const usize as *mut u8,
                 LEAF_NODE_NUM_CELLS_SIZE,
             );
         }
@@ -107,7 +106,7 @@ impl Pager {
 
     pub(crate) fn increment_leaf_node_cells_num(page: *mut u8) {
         unsafe {
-            let page_ptr = page.offset(LEAF_NODE_NUM_CELLS_OFFSET as isize);
+            let page_ptr = page.add(LEAF_NODE_NUM_CELLS_OFFSET);
             let mut cells_num: usize = 0;
             ptr::copy_nonoverlapping(
                 page_ptr,
@@ -127,7 +126,7 @@ impl Pager {
         unsafe {
             let key: usize = 0;
             ptr::copy_nonoverlapping(
-                page.offset((LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE) as isize),
+                page.add(LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE),
                 &key as *const usize as *mut u8,
                 LEAF_NODE_KEY_SIZE,
             );
@@ -139,7 +138,7 @@ impl Pager {
         unsafe {
             ptr::copy_nonoverlapping(
                 &key as *const usize as *mut u8,
-                page.offset((LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE) as isize),
+                page.add(LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE),
                 LEAF_NODE_KEY_SIZE,
             );
         }
@@ -147,8 +146,7 @@ impl Pager {
 
     pub(crate) fn leaf_node_cell(page: *mut u8, cell_index: usize) -> *mut u8 {
         unsafe {
-            let page_ptr = page
-                .offset((LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE) as isize);
+            let page_ptr = page.add(LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE);
             page_ptr
         }
     }
@@ -186,7 +184,7 @@ impl Pager {
 
     pub(crate) fn is_root_node(page: *mut u8) -> bool {
         unsafe {
-            let mut root = false;
+            let root = false;
             ptr::copy_nonoverlapping(
                 page.add(IS_ROOT_OFFSET),
                 &root as *const bool as *mut u8,
@@ -194,6 +192,99 @@ impl Pager {
             );
 
             root
+        }
+    }
+
+    pub(crate) fn set_root_node(page: *mut u8, root: bool) {
+        unsafe {
+            ptr::copy_nonoverlapping(
+                &root as *const bool as *mut u8,
+                page.add(IS_ROOT_OFFSET),
+                IS_ROOT_SIZE,
+            );
+        }
+    }
+
+    fn get_internal_node_num_keys(node: *mut u8) -> usize{
+      unsafe {
+          let num: usize = 0;
+          ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
+                                   &num as *const usize as *mut u8,
+                                   INTERNAL_NODE_NUM_KEYS_SIZE);
+          num
+      }
+    }
+
+    fn set_internal_node_num_keys(node: *mut u8, num: usize){
+        unsafe {
+            ptr::copy_nonoverlapping(&num as *const usize as *mut u8,
+                                     node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
+                                     INTERNAL_NODE_NUM_KEYS_SIZE);
+        }
+    }
+
+    fn set_internal_node_child(node: *mut u8, child_index: usize, value: usize){
+        let num_keys = Pager::get_internal_node_num_keys(node);
+        if child_index > num_keys {
+            println!("Tried to access child_num {} > num_keys {}", child_index, num_keys);
+            exit(1);
+        } else if child_index == num_keys {
+            Pager::set_internal_node_right_child(node, value);
+        } else {
+            Pager::set_internal_node_cell_key(node, child_index, value);
+        }
+
+        unsafe {
+            ptr::copy_nonoverlapping(&child_index as *const usize as *mut u8,
+                                     node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
+                                     INTERNAL_NODE_NUM_KEYS_SIZE);
+        }
+    }
+
+    fn get_internal_node_right_child(node: *mut u8) -> usize{
+        unsafe {
+            let right_child_index: usize = 0;
+            ptr::copy_nonoverlapping(&right_child_index as *const usize as *mut u8,
+                                     node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
+                                     INTERNAL_NODE_RIGHT_CHILD_SIZE);
+            right_child_index
+        }
+    }
+
+    fn set_internal_node_right_child(node: *mut u8, cell_index: usize){
+        unsafe {
+            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
+                                     &cell_index as *const usize as *mut u8,
+                                     INTERNAL_NODE_RIGHT_CHILD_SIZE);
+        }
+    }
+
+    fn get_internal_node_cell_key(node: *mut u8, cell_index: usize) -> usize {
+        unsafe {
+            let key: usize = 0;
+            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE),
+                                     &cell_index as *const usize as *mut u8,
+                                     INTERNAL_NODE_KEY_SIZE);
+            key
+        }
+    }
+
+    fn set_internal_node_cell_key(node: *mut u8, child_index: usize, key: usize){
+        unsafe {
+            ptr::copy_nonoverlapping(&key as *const usize as *mut u8,
+                                    node.add(INTERNAL_NODE_HEADER_SIZE + child_index * INTERNAL_NODE_CELL_SIZE),
+                                     INTERNAL_NODE_KEY_SIZE);
+        }
+    }
+
+    fn get_node_max_key(node: *mut u8) -> usize {
+        match Pager::get_node_type(node) {
+            NodeType::Internal => {
+                Pager::get_internal_node_cell_key(node, Pager::get_internal_node_num_keys(node) - 1)
+            }
+            NodeType::Leaf => {
+                Pager::get_internal_node_cell_key(node, Pager::get_leaf_node_cells_num(node) - 1)
+            }
         }
     }
 
@@ -223,6 +314,18 @@ impl Pager {
 
     pub(crate) fn mark_page_as_updated(&mut self, page_index: usize) {
         self.updated[page_index] = true;
+    }
+
+    pub(crate) fn initialize_leaf_node(node: *mut u8){
+        Pager::set_node_type(node, NodeType::Leaf);
+        Pager::set_root_node(node, false);
+        Pager::set_leaf_node_cells_num(node, 0);
+    }
+
+    fn initialize_internal_node(node: *mut u8){
+        Pager::set_node_type(node, NodeType::Internal);
+        Pager::set_root_node(node, false);
+        Pager::set_leaf_node_cells_num(node, 0);
     }
 }
 
@@ -289,6 +392,35 @@ impl Table {
                 break;
             }
         }
+    }
+
+    pub(crate) fn create_new_root(&mut self, right_child_page_index: usize) {
+        /*
+          Handle splitting the root.
+          Old root copied to new page, becomes left child.
+          Address of right child passed in.
+          Re-initialize root page to contain the new root node.
+          New root node points to two children.
+        */
+        let root = self.pager.get_page(self.root_page_index);
+        let left_child_page_num = self.pager.get_unused_page_num();
+        let left_child = self.pager.get_page(left_child_page_num);
+
+        /* Left child has data copied from old root */
+        unsafe {
+            ptr::copy_nonoverlapping(root, left_child, PAGE_SIZE);
+            Pager::set_root_node(left_child, false)
+        };
+
+        /* Root node is a new internal node with one key and two children */
+        Pager::initialize_internal_node(root);
+        Pager::set_root_node(root, true);
+
+        Pager::set_internal_node_num_keys(root, 1);
+        Pager::set_internal_node_child(root, 0, left_child_page_num);
+        let left_child_max_key = Pager::get_node_max_key(left_child);
+        Pager::set_internal_node_cell_key(root, 0, left_child_max_key);
+        Pager::set_internal_node_right_child(root, right_child_page_index);
     }
 }
 
