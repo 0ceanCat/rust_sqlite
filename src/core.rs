@@ -35,6 +35,7 @@ pub struct Pager {
 impl Pager {
     pub(crate) fn open(db_file: &str) -> Pager {
         let r = OpenOptions::new().create(true).read(true).write(true).open(db_file);
+
         match r {
             Ok(file) => {
                 let size = file.metadata().unwrap().len() as usize;
@@ -231,7 +232,7 @@ impl Pager {
         } else if child_index == num_keys {
             Pager::set_internal_node_right_child(node, value);
         } else {
-            Pager::set_internal_node_cell_key(node, child_index, value);
+            Pager::set_internal_node_cell_child(node, child_index, value);
         }
 
         unsafe {
@@ -262,22 +263,30 @@ impl Pager {
     fn get_internal_node_cell_key(node: *mut u8, cell_index: usize) -> usize {
         unsafe {
             let key: usize = 0;
-            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE),
+            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CELL_SIZE),
                                      &cell_index as *const usize as *mut u8,
                                      INTERNAL_NODE_KEY_SIZE);
             key
         }
     }
 
-    fn set_internal_node_cell_key(node: *mut u8, child_index: usize, key: usize){
+    fn set_internal_node_cell_key(node: *mut u8, cell_index: usize, key: usize){
         unsafe {
             ptr::copy_nonoverlapping(&key as *const usize as *mut u8,
-                                    node.add(INTERNAL_NODE_HEADER_SIZE + child_index * INTERNAL_NODE_CELL_SIZE),
+                                     node.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CELL_SIZE),
                                      INTERNAL_NODE_KEY_SIZE);
         }
     }
 
-    fn get_node_max_key(node: *mut u8) -> usize {
+    fn set_internal_node_cell_child(node: *mut u8, child_index: usize, key: usize){
+        unsafe {
+            ptr::copy_nonoverlapping(&key as *const usize as *mut u8,
+                                    node.add(INTERNAL_NODE_HEADER_SIZE + child_index * INTERNAL_NODE_CELL_SIZE),
+                                     INTERNAL_NODE_CHILD_SIZE);
+        }
+    }
+
+    fn get_node_biggest_key(node: *mut u8) -> usize {
         match Pager::get_node_type(node) {
             NodeType::Internal => {
                 Pager::get_internal_node_cell_key(node, Pager::get_internal_node_num_keys(node) - 1)
@@ -322,7 +331,7 @@ impl Pager {
         Pager::set_leaf_node_cells_num(node, 0);
     }
 
-    fn initialize_internal_node(node: *mut u8){
+    pub(crate) fn initialize_internal_node(node: *mut u8){
         Pager::set_node_type(node, NodeType::Internal);
         Pager::set_root_node(node, false);
         Pager::set_leaf_node_cells_num(node, 0);
@@ -336,6 +345,12 @@ pub struct Table {
 
 impl Table {
     pub(crate) fn new(pager: Pager) -> Table {
+        let mut pager =  pager;
+        if pager.size == 0 {
+            let first_page = pager.get_page(0);
+            Pager::initialize_leaf_node(first_page);
+            Pager::set_root_node(first_page, true);
+        }
         Table {
             root_page_index: 0,
             pager,
@@ -417,9 +432,10 @@ impl Table {
         Pager::set_root_node(root, true);
 
         Pager::set_internal_node_num_keys(root, 1);
+        // first child index = left child index
         Pager::set_internal_node_child(root, 0, left_child_page_num);
-        let left_child_max_key = Pager::get_node_max_key(left_child);
-        Pager::set_internal_node_cell_key(root, 0, left_child_max_key);
+        let left_child_biggest_key = Pager::get_node_biggest_key(left_child);
+        Pager::set_internal_node_cell_key(root, 0, left_child_biggest_key);
         Pager::set_internal_node_right_child(root, right_child_page_index);
     }
 }

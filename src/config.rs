@@ -60,6 +60,6 @@ pub const INTERNAL_NODE_HEADER_SIZE: usize = COMMON_NODE_HEADER_SIZE + INTERNAL_
 /*
 * Internal Node Body Layout
 */
-pub const INTERNAL_NODE_KEY_SIZE: usize = std::mem::size_of::<u32>();
 pub const INTERNAL_NODE_CHILD_SIZE: usize = std::mem::size_of::<u32>();
+pub const INTERNAL_NODE_KEY_SIZE: usize = std::mem::size_of::<u32>();
 pub const INTERNAL_NODE_CELL_SIZE: usize = INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE;
