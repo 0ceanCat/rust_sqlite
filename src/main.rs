@@ -2,6 +2,7 @@ mod core;
 mod config;
 mod cursor;
 mod enums;
+mod common;
 
 use std::process::exit;
 use core::*;

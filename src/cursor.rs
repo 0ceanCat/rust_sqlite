@@ -1,5 +1,5 @@
 use std::process::exit;
-use std::ptr;
+use crate::common::{copy, copy_nonoverlapping};
 use crate::config::{LEAF_NODE_CELL_SIZE, LEAF_NODE_LEFT_SPLIT_COUNT, LEAF_NODE_MAX_CELLS, LEAF_NODE_RIGHT_SPLIT_COUNT};
 use crate::core::{Pager, Row, Table};
 
@@ -75,13 +75,11 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    fn insert(&mut self, page:*mut u8, num_cells: usize, key: usize, row: &Row) {
+    fn insert(&mut self, page: *mut u8, num_cells: usize, key: usize, row: &Row) {
         if self.cell_index < num_cells {
-            unsafe {
-                ptr::copy(Pager::leaf_node_cell(page, self.cell_index),
-                                         Pager::leaf_node_cell(page, self.cell_index + 1),
-                                         LEAF_NODE_CELL_SIZE * (num_cells - self.cell_index + 1))
-            }
+            copy(Pager::leaf_node_cell(page, self.cell_index),
+                 Pager::leaf_node_cell(page, self.cell_index + 1),
+                 LEAF_NODE_CELL_SIZE * (num_cells - self.cell_index + 1))
         }
         Pager::set_leaf_node_cell_key(page, self.cell_index, key);
         Pager::increment_leaf_node_cells_num(page);
@@ -98,24 +96,25 @@ impl<'a> Cursor<'a> {
         for i in (0..=LEAF_NODE_MAX_CELLS).rev() {
             let destination_node;
             if i >= LEAF_NODE_LEFT_SPLIT_COUNT {
+                // upper halves (right halves) will be stored in the new_node
                 destination_node = new_node;
             } else {
                 destination_node = old_node;
             }
+            // index_within_node will always decrement until it arrives to 0, then destination_node will be switched to old_node
             let index_within_node = i % LEAF_NODE_LEFT_SPLIT_COUNT;
             let cell_pointer = Pager::leaf_node_cell(destination_node, index_within_node);
 
             if i == self.cell_index {
-                Pager::set_leaf_node_cell_key(destination_node, self.cell_index, key);
+                // when this code executes, the value in the cell_pointer was already moved to position i + 1, if cell_pointer is old_node
+                // if cell_pointer is new_node, position `index_within_node` is empty
+                Pager::set_leaf_node_cell_key(destination_node, index_within_node, key);
                 row.serialize_row(cell_pointer);
             } else if i > self.cell_index {
-                unsafe {
-                    ptr::copy_nonoverlapping(Pager::leaf_node_cell(old_node, i - 1), cell_pointer, LEAF_NODE_CELL_SIZE);
-                }
+                // copy a node from old_node tail (position i - 1), to destination_node (index_within_node)
+                copy_nonoverlapping(Pager::leaf_node_cell(old_node, i - 1), cell_pointer, LEAF_NODE_CELL_SIZE);
             } else {
-                unsafe {
-                    ptr::copy_nonoverlapping(Pager::leaf_node_cell(old_node, i), cell_pointer, LEAF_NODE_CELL_SIZE);
-                }
+                copy_nonoverlapping(Pager::leaf_node_cell(old_node, i), cell_pointer, LEAF_NODE_CELL_SIZE);
             }
         }
 
