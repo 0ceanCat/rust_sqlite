@@ -503,6 +503,7 @@ impl Table {
         Pager::set_internal_node_child(root, 0, left_child_page_num);
         let left_child_biggest_key = Pager::get_node_biggest_key(left_child);
         Pager::set_internal_node_cell_key(root, 0, left_child_biggest_key);
+        Pager::set_internal_node_right_child(root, right_child_page_index);
     }
 
 
