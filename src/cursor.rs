@@ -1,7 +1,7 @@
 use std::process::exit;
-use crate::common::{copy, copy_nonoverlapping};
 use crate::config::{LEAF_NODE_CELL_SIZE, LEAF_NODE_LEFT_SPLIT_COUNT, LEAF_NODE_MAX_CELLS, LEAF_NODE_RIGHT_SPLIT_COUNT};
 use crate::core::{Pager, Row, Table};
+use crate::common::{copy};
 
 pub struct Cursor<'a> {
     table: &'a mut Table,
@@ -112,9 +112,9 @@ impl<'a> Cursor<'a> {
                 row.serialize_row(cell_pointer);
             } else if i > self.cell_index {
                 // copy a node from old_node tail (position i - 1), to destination_node (index_within_node)
-                copy_nonoverlapping(Pager::leaf_node_cell(old_node, i - 1), cell_pointer, LEAF_NODE_CELL_SIZE);
+                copy(Pager::leaf_node_cell(old_node, i - 1), cell_pointer, LEAF_NODE_CELL_SIZE);
             } else {
-                copy_nonoverlapping(Pager::leaf_node_cell(old_node, i), cell_pointer, LEAF_NODE_CELL_SIZE);
+                copy(Pager::leaf_node_cell(old_node, i), cell_pointer, LEAF_NODE_CELL_SIZE);
             }
         }
 

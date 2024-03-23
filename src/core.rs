@@ -6,13 +6,12 @@ use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::os::windows::fs::FileExt;
 use std::process::{exit};
-use std::ptr;
+use std::{ptr};
 use regex::Regex;
-use crate::common::copy_nonoverlapping;
+use crate::common::indent;
 use crate::config::*;
 use crate::cursor::Cursor;
 use crate::enums::*;
-
 
 macro_rules! to_u8_array {
     ($s:ident, $size: expr) => {
@@ -26,7 +25,7 @@ macro_rules! to_u8_array {
 }
 
 pub struct Pager {
-    pages: Vec<Page>,
+    pages: [Option<Page>; TABLE_MAX_PAGES],
     updated: [bool; TABLE_MAX_PAGES],
     fd: File,
     size: usize,
@@ -46,7 +45,7 @@ impl Pager {
                 }
                 let mut total_pages = size / PAGE_SIZE;
                 Pager {
-                    pages: Vec::with_capacity(TABLE_MAX_PAGES),
+                    pages: [None; TABLE_MAX_PAGES],
                     fd: file,
                     updated: [false; TABLE_MAX_PAGES],
                     size,
@@ -69,17 +68,19 @@ impl Pager {
     }
 
     pub(crate) fn get_page(&mut self, page_index: usize) -> *mut u8 {
-        let page = self.pages.get(page_index);
+        let page = self.pages[page_index];
         if page.is_none() {
+            let loaded_page;
             if self.page_in_disk(page_index) {
-                let loaded_page = self.read_page_from_disk((page_index * PAGE_SIZE) as u64);
-                self.pages.push(loaded_page);
+                loaded_page = self.read_page_from_disk((page_index * PAGE_SIZE) as u64);
             } else {
-                self.pages.push(Page::new_page());
+                let new_page: Page = [0; PAGE_SIZE];
+                loaded_page = new_page;
                 self.total_pages += 1;
             }
+            self.pages[page_index] = Some(loaded_page);
         }
-        self.pages.get_mut(page_index).unwrap().content.as_mut_ptr()
+        self.pages[page_index].as_mut().unwrap().as_mut_ptr()
     }
 
     pub(crate) fn get_leaf_node_cells_num(page: *mut u8) -> usize {
@@ -94,36 +95,47 @@ impl Pager {
             cells_num
         }
     }
-
+    pub(crate) fn test_set_leaf_node_cells_num(page: &*mut u8, num: usize) {
+        unsafe {
+            ptr::copy_nonoverlapping(
+                &num as *const usize as *mut u8,
+                page.add(LEAF_NODE_NUM_CELLS_OFFSET),
+                LEAF_NODE_NUM_CELLS_SIZE,
+            );
+        }
+    }
     pub(crate) fn set_leaf_node_cells_num(page: *mut u8, num: usize) {
-        let page_ptr = unsafe { page.add(LEAF_NODE_NUM_CELLS_OFFSET) };
-        copy_nonoverlapping(
-            page_ptr,
-            &num as *const usize as *mut u8,
-            LEAF_NODE_NUM_CELLS_SIZE,
-        );
+        unsafe {
+            ptr::copy_nonoverlapping(
+                &num as *const usize as *mut u8,
+                page.add(LEAF_NODE_NUM_CELLS_OFFSET),
+                LEAF_NODE_NUM_CELLS_SIZE,
+            );
+        }
     }
 
     pub(crate) fn increment_leaf_node_cells_num(page: *mut u8) {
-        let page_ptr = unsafe { page.add(LEAF_NODE_NUM_CELLS_OFFSET) };
-        let mut cells_num: usize = 0;
-        copy_nonoverlapping(
-            page_ptr,
-            &mut cells_num as *mut usize as *mut u8,
-            LEAF_NODE_NUM_CELLS_SIZE,
-        );
-        cells_num += 1;
-        copy_nonoverlapping(
-            &mut cells_num as *mut usize as *mut u8,
-            page_ptr,
-            LEAF_NODE_NUM_CELLS_SIZE,
-        );
+        unsafe {
+            let page_ptr = page.add(LEAF_NODE_NUM_CELLS_OFFSET);
+            let mut cells_num: usize = 0;
+            ptr::copy_nonoverlapping(
+                page_ptr,
+                &mut cells_num as *mut usize as *mut u8,
+                LEAF_NODE_NUM_CELLS_SIZE,
+            );
+            cells_num += 1;
+            ptr::copy_nonoverlapping(
+                &mut cells_num as *mut usize as *mut u8,
+                page_ptr,
+                LEAF_NODE_NUM_CELLS_SIZE,
+            );
+        }
     }
 
     pub(crate) fn get_leaf_node_cell_key(page: *mut u8, cell_index: usize) -> usize {
         unsafe {
             let key: usize = 0;
-            copy_nonoverlapping(page.add(LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE),
+            ptr::copy_nonoverlapping(page.add(LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE),
                                      &key as *const usize as *mut u8,
                                      LEAF_NODE_KEY_SIZE);
             key
@@ -132,7 +144,7 @@ impl Pager {
 
     pub(crate) fn set_leaf_node_cell_key(page: *mut u8, cell_index: usize, key: usize) {
         unsafe {
-            copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 &key as *const usize as *mut u8,
                 page.add(LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE),
                 LEAF_NODE_KEY_SIZE,
@@ -158,7 +170,7 @@ impl Pager {
         unsafe {
             let node_type: u8 = 0;
 
-            copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 ptr.add(NODE_TYPE_OFFSET),
                 &node_type as *const u8 as *mut u8,
                 NODE_TYPE_SIZE,
@@ -167,11 +179,20 @@ impl Pager {
             NodeType::from(node_type)
         }
     }
+    fn test_set_node_type(page: *mut u8, node_type: NodeType) {
+        unsafe {
+            ptr::copy_nonoverlapping(
+                &(node_type as u8) as *const u8 as *mut u8,
+                page.add(NODE_TYPE_OFFSET),
+                NODE_TYPE_SIZE,
+            );
+        }
+    }
 
     fn set_node_type(page: *mut u8, node_type: NodeType) {
         unsafe {
-            copy_nonoverlapping(
-                (node_type as u8) as *const u8 as *mut u8,
+            ptr::copy_nonoverlapping(
+                &(node_type as u8) as *const u8 as *mut u8,
                 page.add(NODE_TYPE_OFFSET),
                 NODE_TYPE_SIZE,
             );
@@ -181,7 +202,7 @@ impl Pager {
     pub(crate) fn is_root_node(page: *mut u8) -> bool {
         unsafe {
             let root = false;
-            copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 page.add(IS_ROOT_OFFSET),
                 &root as *const bool as *mut u8,
                 IS_ROOT_SIZE,
@@ -191,9 +212,19 @@ impl Pager {
         }
     }
 
+    pub(crate) fn test_set_root_node(page: &*mut u8, root: bool) {
+        unsafe {
+            ptr::copy_nonoverlapping(
+                &root as *const bool as *mut u8,
+                page.add(IS_ROOT_OFFSET),
+                IS_ROOT_SIZE,
+            );
+        }
+    }
+
     pub(crate) fn set_root_node(page: *mut u8, root: bool) {
         unsafe {
-            copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 &root as *const bool as *mut u8,
                 page.add(IS_ROOT_OFFSET),
                 IS_ROOT_SIZE,
@@ -204,7 +235,7 @@ impl Pager {
     fn get_internal_node_num_keys(node: *mut u8) -> usize {
         unsafe {
             let num: usize = 0;
-            copy_nonoverlapping(node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
+            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
                                      &num as *const usize as *mut u8,
                                      INTERNAL_NODE_NUM_KEYS_SIZE);
             num
@@ -213,7 +244,7 @@ impl Pager {
 
     fn set_internal_node_num_keys(node: *mut u8, num: usize) {
         unsafe {
-            copy_nonoverlapping(&num as *const usize as *mut u8,
+            ptr::copy_nonoverlapping(&num as *const usize as *mut u8,
                                      node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
                                      INTERNAL_NODE_NUM_KEYS_SIZE);
         }
@@ -235,11 +266,23 @@ impl Pager {
         }
     }
 
+    fn get_internal_node_child(node: *mut u8, child_index: usize) -> usize {
+        let num_keys = Pager::get_internal_node_num_keys(node);
+        if child_index > num_keys {
+            println!("Tried to access child_num {} > num_keys {}", child_index, num_keys);
+            exit(1);
+        } else if child_index == num_keys {
+            Pager::get_internal_node_right_child(node)
+        } else {
+            Pager::get_internal_node_cell_child(node, child_index)
+        }
+    }
+
     fn get_internal_node_right_child(node: *mut u8) -> usize {
         unsafe {
             let right_child_index: usize = 0;
-            copy_nonoverlapping(&right_child_index as *const usize as *mut u8,
-                                     node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
+            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
+                                     &right_child_index as *const usize as *mut u8,
                                      INTERNAL_NODE_RIGHT_CHILD_SIZE);
             right_child_index
         }
@@ -247,7 +290,7 @@ impl Pager {
 
     fn set_internal_node_right_child(node: *mut u8, cell_index: usize) {
         unsafe {
-            copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
+            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
                                      &cell_index as *const usize as *mut u8,
                                      INTERNAL_NODE_RIGHT_CHILD_SIZE);
         }
@@ -255,17 +298,28 @@ impl Pager {
 
     fn set_internal_node_cell_child(node: *mut u8, child_index: usize, key: usize) {
         unsafe {
-            copy_nonoverlapping(&key as *const usize as *mut u8,
+            ptr::copy_nonoverlapping(&key as *const usize as *mut u8,
                                      node.add(INTERNAL_NODE_HEADER_SIZE + child_index * INTERNAL_NODE_CELL_SIZE),
                                      INTERNAL_NODE_CHILD_SIZE);
         }
     }
 
-    fn get_internal_node_cell_key(node: *mut u8, cell_index: usize) -> usize {
+    fn get_internal_node_cell_child(node: *mut u8, child_index: usize) -> usize {
         unsafe {
             let key: usize = 0;
-            copy_nonoverlapping(node.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CHILD_SIZE),
-                                     &cell_index as *const usize as *mut u8,
+            ptr::copy_nonoverlapping(
+                node.add(INTERNAL_NODE_HEADER_SIZE + child_index * INTERNAL_NODE_CELL_SIZE),
+                &key as *const usize as *mut u8,
+                INTERNAL_NODE_CHILD_SIZE);
+            key
+        }
+    }
+
+    fn  get_internal_node_cell_key(node: *mut u8, cell_index: usize) -> usize {
+        unsafe {
+            let key: usize = 0;
+            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CHILD_SIZE),
+                                     &key as *const usize as *mut u8,
                                      INTERNAL_NODE_KEY_SIZE);
             key
         }
@@ -273,7 +327,7 @@ impl Pager {
 
     fn set_internal_node_cell_key(node: *mut u8, cell_index: usize, key: usize) {
         unsafe {
-            copy_nonoverlapping(&key as *const usize as *mut u8,
+            ptr::copy_nonoverlapping(&key as *const usize as *mut u8,
                                      node.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CHILD_SIZE),
                                      INTERNAL_NODE_KEY_SIZE);
         }
@@ -293,7 +347,7 @@ impl Pager {
     fn read_page_from_disk(&self, offset: u64) -> Page {
         let mut bytes = [0; PAGE_SIZE];
         self.fd.seek_read(&mut bytes, offset).unwrap();
-        Page::from(bytes)
+        bytes
     }
 
     fn page_in_disk(&self, page_num: usize) -> bool {
@@ -301,17 +355,15 @@ impl Pager {
     }
 
     fn flush_page_to_disk(&mut self, page_num: usize) -> bool {
-        let page_op = self.pages.get(page_num);
-        match page_op {
-            None => {
-                false
-            }
-            Some(page) => {
-                self.fd.seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64)).unwrap();
-                self.fd.write(&page.content).unwrap();
-                true
-            }
+        let page: Option<&Page> = self.pages[page_num].as_ref();
+
+        if page.is_none() {
+            return false
         }
+
+        self.fd.seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64)).unwrap();
+        self.fd.write(page.unwrap()).unwrap();
+        true
     }
 
     pub(crate) fn mark_page_as_updated(&mut self, page_index: usize) {
@@ -354,15 +406,37 @@ impl Table {
         let node_type = self.pager.get_node_type_by_index(self.root_page_index);
         match node_type {
             NodeType::Internal => {
-                panic!("not implemented")
+                self.internal_node_find(key)
             }
             NodeType::Leaf => {
-                self.find(key)
+                self.leaf_node_find(key)
             }
         }
     }
 
-    fn find(&mut self, key: usize) -> Cursor {
+    fn leaf_node_find(&mut self, key: usize) -> Cursor {
+        let root = self.pager.get_page(self.root_page_index);
+        let cells_num = Pager::get_leaf_node_cells_num(root);
+
+        let mut min_index = 0;
+        let mut right = cells_num;
+        while right != min_index {
+            let index = (min_index + right) / 2;
+            let key_at_index = Pager::get_leaf_node_cell_key(root, index);
+            if key == key_at_index {
+                return Cursor::at(self, index);
+            }
+            if key < key_at_index {
+                right = index;
+            } else {
+                min_index = index + 1;
+            }
+        }
+
+        Cursor::at(self, min_index)
+    }
+
+    fn internal_node_find(&mut self, key: usize) -> Cursor {
         let root = self.pager.get_page(self.root_page_index);
         let cells_num = Pager::get_leaf_node_cells_num(root);
 
@@ -390,11 +464,11 @@ impl Table {
         let row_offset = row_num % ROWS_PER_PAGE;
         let byte_offset = row_offset * ROW_SIZE;
         unsafe {
-            page.offset(byte_offset as isize)
+            page.add(byte_offset)
         }
     }
 
-    pub(crate) fn flush_to_disk(mut self) {
+    pub(crate) fn flush_to_disk(&mut self) {
         for x in 0..TABLE_MAX_PAGES {
             if !self.pager.flush_page_to_disk(x) {
                 break;
@@ -429,35 +503,40 @@ impl Table {
         Pager::set_internal_node_child(root, 0, left_child_page_num);
         let left_child_biggest_key = Pager::get_node_biggest_key(left_child);
         Pager::set_internal_node_cell_key(root, 0, left_child_biggest_key);
-        Pager::set_internal_node_right_child(root, right_child_page_index);
     }
-}
 
-struct Page {
-    content: [u8; PAGE_SIZE],
-}
 
-impl Page {
-    fn new_page() -> Page {
-        Page {
-            content: [0; PAGE_SIZE]
+    pub fn print_tree(&mut self, page_num: usize, indentation_level: usize) {
+        let node = self.pager.get_page(page_num);
+        match Pager::get_node_type(node) {
+            NodeType::Leaf => {
+                let num_keys = Pager::get_leaf_node_cells_num(node);
+                indent(indentation_level);
+                println!("- leaf (size {})", num_keys);
+                for i in 0..num_keys {
+                    indent(indentation_level + 1);
+                    println!("- {}", Pager::get_leaf_node_cell_key(node, i));
+                }
+            }
+            NodeType::Internal => {
+                let num_keys = Pager::get_internal_node_num_keys(node);
+                indent(indentation_level);
+                println!("- internal (size {})", num_keys);
+                for i in 0..num_keys {
+                    let child = Pager::get_internal_node_child(node, i);
+                    self.print_tree(child, indentation_level + 1);
+
+                    indent(indentation_level + 1);
+                    println!("- key {}", Pager::get_internal_node_cell_key(node, i));
+                }
+                let child = Pager::get_internal_node_right_child(node);
+                self.print_tree(child, indentation_level + 1);
+            }
         }
     }
-
-    fn from(b: [u8; PAGE_SIZE]) -> Page {
-        Page {
-            content: b
-        }
-    }
-
-    fn as_ptr(&self) -> *const u8 {
-        self.content.as_ptr()
-    }
-
-    fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.content.as_mut_ptr()
-    }
 }
+
+type Page = [u8; PAGE_SIZE];
 
 
 #[derive(Debug)]
@@ -577,6 +656,10 @@ pub fn prepare_statement(input: &str) -> Result<Statement, &'static str> {
         return Err("Insert syntax error");
     } else if input == "select" {
         return Ok(Statement::new(StatementType::StatementSelect, None));
+    } else if input == "flush" {
+        return Ok(Statement::new(StatementType::StatementFlush, None));
+    } else if input == "btree" {
+        return Ok(Statement::new(StatementType::StatementBTree, None));
     }
 
     Err("GG")
@@ -590,6 +673,14 @@ pub fn execute_statement(statement: &Statement, table: &mut Table) -> ExecutionR
         StatementType::StatementSelect => {
             execute_select(Cursor::table_start(table))
         }
+        StatementType::StatementFlush => {
+            table.flush_to_disk();
+            ExecutionResult::ExecutionSuccess
+        }
+        StatementType::StatementBTree => {
+            table.print_tree(0, 0);
+            ExecutionResult::ExecutionSuccess
+        }
     }
 }
 
@@ -597,6 +688,7 @@ pub fn execute_insert(statement: &Statement, table: &mut Table) -> ExecutionResu
     let row_to_insert = &statement.row;
 
     let row = row_to_insert.as_ref().unwrap();
+
     let mut cursor = table.table_find(row.id);
     cursor.insert_row(row.id, row);
     ExecutionResult::ExecutionSuccess

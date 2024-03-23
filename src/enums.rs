@@ -19,6 +19,8 @@ pub(crate) enum ExecutionResult {
 pub(crate) enum StatementType {
     StatementInsert,
     StatementSelect,
+    StatementFlush,
+    StatementBTree,
 }
 
 pub(crate) enum NodeType {

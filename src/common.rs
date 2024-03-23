@@ -11,3 +11,9 @@ pub(crate) fn copy<T>(src: *const T, dst: *mut T, count: usize) {
         ptr::copy(src, dst, count);
     }
 }
+
+pub(crate) fn indent(level: usize) {
+  for _ in 0..level {
+      print!(" ")
+  }
+}
