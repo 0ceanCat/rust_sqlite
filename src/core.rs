@@ -95,15 +95,7 @@ impl Pager {
             cells_num
         }
     }
-    pub(crate) fn test_set_leaf_node_cells_num(page: &*mut u8, num: usize) {
-        unsafe {
-            ptr::copy_nonoverlapping(
-                &num as *const usize as *mut u8,
-                page.add(LEAF_NODE_NUM_CELLS_OFFSET),
-                LEAF_NODE_NUM_CELLS_SIZE,
-            );
-        }
-    }
+
     pub(crate) fn set_leaf_node_cells_num(page: *mut u8, num: usize) {
         unsafe {
             ptr::copy_nonoverlapping(
@@ -179,15 +171,6 @@ impl Pager {
             NodeType::from(node_type)
         }
     }
-    fn test_set_node_type(page: *mut u8, node_type: NodeType) {
-        unsafe {
-            ptr::copy_nonoverlapping(
-                &(node_type as u8) as *const u8 as *mut u8,
-                page.add(NODE_TYPE_OFFSET),
-                NODE_TYPE_SIZE,
-            );
-        }
-    }
 
     fn set_node_type(page: *mut u8, node_type: NodeType) {
         unsafe {
@@ -209,16 +192,6 @@ impl Pager {
             );
 
             root
-        }
-    }
-
-    pub(crate) fn test_set_root_node(page: &*mut u8, root: bool) {
-        unsafe {
-            ptr::copy_nonoverlapping(
-                &root as *const bool as *mut u8,
-                page.add(IS_ROOT_OFFSET),
-                IS_ROOT_SIZE,
-            );
         }
     }
 
@@ -333,6 +306,25 @@ impl Pager {
         }
     }
 
+    pub(crate) fn set_leaf_node_next_leaf(node: *mut u8, next_leaf: usize) {
+        unsafe {
+            ptr::copy_nonoverlapping(&next_leaf as *const usize as *mut u8,
+                                     node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
+                                     INTERNAL_NODE_RIGHT_CHILD_SIZE);
+        }
+    }
+
+    pub(crate) fn get_leaf_node_next_leaf(node: *mut u8) -> usize{
+        unsafe {
+            let next_leaf: usize = 0;
+            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
+                                     &next_leaf as *const usize as *mut u8,
+                                     INTERNAL_NODE_RIGHT_CHILD_SIZE);
+            next_leaf
+        }
+    }
+
+
     fn get_node_biggest_key(node: *mut u8) -> usize {
         match Pager::get_node_type(node) {
             NodeType::Internal => {
@@ -374,6 +366,7 @@ impl Pager {
         Pager::set_node_type(node, NodeType::Leaf);
         Pager::set_root_node(node, false);
         Pager::set_leaf_node_cells_num(node, 0);
+        Pager::set_leaf_node_next_leaf(node, 0);
     }
 
     pub(crate) fn initialize_internal_node(node: *mut u8) {
@@ -406,16 +399,16 @@ impl Table {
         let node_type = self.pager.get_node_type_by_index(self.root_page_index);
         match node_type {
             NodeType::Internal => {
-                self.internal_node_find(key)
+                self.internal_node_find(self.root_page_index, key)
             }
             NodeType::Leaf => {
-                self.leaf_node_find(key)
+                self.leaf_node_find(self.root_page_index, key)
             }
         }
     }
 
-    fn leaf_node_find(&mut self, key: usize) -> Cursor {
-        let root = self.pager.get_page(self.root_page_index);
+    fn leaf_node_find(&mut self, page_index: usize, key: usize) -> Cursor {
+        let root = self.pager.get_page(page_index);
         let cells_num = Pager::get_leaf_node_cells_num(root);
 
         let mut min_index = 0;
@@ -424,7 +417,7 @@ impl Table {
             let index = (min_index + right) / 2;
             let key_at_index = Pager::get_leaf_node_cell_key(root, index);
             if key == key_at_index {
-                return Cursor::at(self, index);
+                return Cursor::at(self, page_index, index);
             }
             if key < key_at_index {
                 right = index;
@@ -433,29 +426,35 @@ impl Table {
             }
         }
 
-        Cursor::at(self, min_index)
+        Cursor::at(self, page_index, min_index)
     }
 
-    fn internal_node_find(&mut self, key: usize) -> Cursor {
-        let root = self.pager.get_page(self.root_page_index);
-        let cells_num = Pager::get_leaf_node_cells_num(root);
+    fn internal_node_find(&mut self, page_index: usize, key: usize) -> Cursor {
+        let node = self.pager.get_page(page_index);
+        let keys_num = Pager::get_internal_node_num_keys(node);
 
         let mut min_index = 0;
-        let mut right = cells_num;
-        while right != min_index {
-            let index = (min_index + right) / 2;
-            let key_at_index = Pager::get_leaf_node_cell_key(root, index);
-            if key == key_at_index {
-                return Cursor::at(self, index);
-            }
-            if key < key_at_index {
-                right = index;
+        let mut max_index  = keys_num;
+        while max_index  != min_index {
+            let index = (min_index + max_index ) / 2;
+            let key_at_index = Pager::get_internal_node_cell_key(node, index);
+            if key_at_index >= key {
+                max_index = index;
             } else {
                 min_index = index + 1;
             }
         }
 
-        Cursor::at(self, min_index)
+        let child_index = Pager::get_internal_node_child(node, min_index);
+        let child = self.pager.get_page(child_index);
+        match Pager::get_node_type(child) {
+            NodeType::Leaf => {
+                self.leaf_node_find(child_index, key)
+            }
+            NodeType::Internal => {
+                self.internal_node_find(child_index, key)
+            }
+        }
     }
 
     pub(crate) fn row_slot(&mut self, row_num: usize) -> *mut u8 {

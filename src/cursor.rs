@@ -1,5 +1,5 @@
 use std::process::exit;
-use crate::config::{LEAF_NODE_CELL_SIZE, LEAF_NODE_LEFT_SPLIT_COUNT, LEAF_NODE_MAX_CELLS, LEAF_NODE_RIGHT_SPLIT_COUNT};
+use crate::config::{LEAF_NODE_CELL_SIZE, LEAF_NODE_LEFT_SPLIT_COUNT, LEAF_NODE_MAX_CELLS, LEAF_NODE_RIGHT_SPLIT_COUNT, PAGE_SIZE};
 use crate::core::{Pager, Row, Table};
 use crate::common::{copy};
 
@@ -12,8 +12,7 @@ pub struct Cursor<'a> {
 }
 
 impl<'a> Cursor<'a> {
-    pub(crate) fn at(table: &mut Table, cell_index: usize) -> Cursor {
-        let page_index = table.root_page_index;
+    pub(crate) fn at(table: &mut Table, page_index: usize, cell_index: usize) -> Cursor {
         let page = table.pager.get_page(page_index);
         let num_cells = Pager::get_leaf_node_cells_num(page);
         Cursor {
@@ -26,16 +25,8 @@ impl<'a> Cursor<'a> {
     }
 
     pub(crate) fn table_start(table: &mut Table) -> Cursor {
-        let page_index = table.root_page_index;
-        let page = table.pager.get_page(page_index);
-        let num_cells = Pager::get_leaf_node_cells_num(page);
-        Cursor {
-            table,
-            page_index,
-            cell_index: 0,
-            total_cells: num_cells,
-            end_of_table: num_cells == 0,
-        }
+        //  if key 0 does not exist in the table, this method will return the position of the lowest id (the start of the left-most leaf node)
+        table.table_find(0)
     }
 
     pub(crate) fn table_end(table: &mut Table) -> Cursor {
@@ -60,7 +51,14 @@ impl<'a> Cursor<'a> {
         self.cell_index += 1;
 
         if self.cell_index >= self.total_cells {
-            self.end_of_table = true;
+            let next_page_index = Pager::get_leaf_node_next_leaf(self.table.pager.get_page(self.page_index));
+            if next_page_index == 0 {
+              /* This was rightmost leaf */
+              self.end_of_table = true;
+            } else {
+                self.page_index = next_page_index;
+                self.cell_index = 0;
+            }
         }
     }
 
@@ -92,6 +90,9 @@ impl<'a> Cursor<'a> {
         let new_page_index = self.table.pager.get_unused_page_num();
         let new_node = self.table.pager.get_page(new_page_index);
         Pager::initialize_leaf_node(new_node);
+
+        Pager::set_leaf_node_next_leaf(new_node, Pager::get_leaf_node_next_leaf(old_node));
+        Pager::set_leaf_node_next_leaf(old_node, new_page_index);
 
         for i in (0..=LEAF_NODE_MAX_CELLS).rev() {
             let destination_node;
@@ -136,4 +137,5 @@ impl<'a> Cursor<'a> {
     pub(crate) fn is_full(&self) -> bool {
         false
     }
+
 }
