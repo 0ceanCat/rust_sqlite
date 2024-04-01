@@ -9,7 +9,7 @@ pub const USERNAME_OFFSET: usize = ID_OFFSET + ID_SIZE;
 pub const EMAIL_OFFSET: usize = USERNAME_OFFSET + USERNAME_SIZE;
 pub const ROW_SIZE: usize = ID_SIZE + USERNAME_SIZE + EMAIL_SIZE;
 
-pub const PAGE_SIZE: usize = ROW_SIZE * 5;
+pub const PAGE_SIZE: usize = ROW_SIZE * 3;
 pub const TABLE_MAX_PAGES: usize = 100;
 pub const ROWS_PER_PAGE: usize = PAGE_SIZE / ROW_SIZE;
 pub const TABLE_MAX_ROWS: usize = ROWS_PER_PAGE * TABLE_MAX_PAGES;
@@ -33,7 +33,7 @@ pub const LEAF_NODE_NUM_CELLS_SIZE: usize = std::mem::size_of::<u32>();
 pub const LEAF_NODE_NUM_CELLS_OFFSET: usize = COMMON_NODE_HEADER_SIZE;
 pub const LEAF_NODE_NEXT_LEAF_SIZE: usize = std::mem::size_of::<u32>();
 pub const LEAF_NODE_NEXT_LEAF_OFFSET: usize = LEAF_NODE_NUM_CELLS_OFFSET + LEAF_NODE_NUM_CELLS_SIZE;
-pub const LEAF_NODE_HEADER_SIZE: usize = COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE +  LEAF_NODE_NEXT_LEAF_SIZE;
+pub const LEAF_NODE_HEADER_SIZE: usize = COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE + LEAF_NODE_NEXT_LEAF_SIZE;
 
 /*
 * Leaf Node Body Layout
@@ -65,3 +65,8 @@ pub const INTERNAL_NODE_HEADER_SIZE: usize = COMMON_NODE_HEADER_SIZE + INTERNAL_
 pub const INTERNAL_NODE_CHILD_SIZE: usize = std::mem::size_of::<u32>();
 pub const INTERNAL_NODE_KEY_SIZE: usize = std::mem::size_of::<u32>();
 pub const INTERNAL_NODE_CELL_SIZE: usize = INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE;
+
+pub const INTERNAL_NODE_MAX_KEYS: usize = 3;
+
+pub const INTERNAL_NODE_MAX_CELLS: usize = 3;
+pub const INVALID_PAGE_NUM: usize = u32::MAX as usize;

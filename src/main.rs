@@ -7,6 +7,7 @@ mod common;
 use std::process::exit;
 use core::*;
 use enums::*;
+
 fn main() -> Result<(), &'static str> {
     let file_name = "./db";
     let pager = Pager::open(file_name);

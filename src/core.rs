@@ -7,8 +7,9 @@ use std::io::{Seek, SeekFrom, Write};
 use std::os::windows::fs::FileExt;
 use std::process::{exit};
 use std::{ptr};
+use std::ptr::null_mut;
 use regex::Regex;
-use crate::common::indent;
+use crate::common::{copy, indent};
 use crate::config::*;
 use crate::cursor::Cursor;
 use crate::enums::*;
@@ -68,6 +69,11 @@ impl Pager {
     }
 
     pub(crate) fn get_page(&mut self, page_index: usize) -> *mut u8 {
+        if page_index > TABLE_MAX_PAGES {
+            println!("Tried to fetch page number out of bounds. {} > {}\n", page_index, TABLE_MAX_PAGES);
+            exit(1);
+        }
+
         let page = self.pages[page_index];
         if page.is_none() {
             let loaded_page;
@@ -205,7 +211,13 @@ impl Pager {
         }
     }
 
-    fn get_internal_node_num_keys(node: *mut u8) -> usize {
+    pub(crate) fn internal_node_cell(page: *mut u8, cell_index: usize) -> *mut u8 {
+        unsafe {
+            page.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE)
+        }
+    }
+
+    pub fn get_internal_node_num_keys(node: *mut u8) -> usize {
         unsafe {
             let num: usize = 0;
             ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
@@ -215,7 +227,7 @@ impl Pager {
         }
     }
 
-    fn set_internal_node_num_keys(node: *mut u8, num: usize) {
+    pub fn set_internal_node_num_keys(node: *mut u8, num: usize) {
         unsafe {
             ptr::copy_nonoverlapping(&num as *const usize as *mut u8,
                                      node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
@@ -227,7 +239,7 @@ impl Pager {
         set a child into cells.
         each page can have multiple child cells
     */
-    fn set_internal_node_child(node: *mut u8, child_index: usize, value: usize) {
+    pub fn set_internal_node_child(node: *mut u8, child_index: usize, value: usize) {
         let num_keys = Pager::get_internal_node_num_keys(node);
         if child_index > num_keys {
             println!("Tried to access child_num {} > num_keys {}", child_index, num_keys);
@@ -239,19 +251,29 @@ impl Pager {
         }
     }
 
-    fn get_internal_node_child(node: *mut u8, child_index: usize) -> usize {
+    pub fn get_internal_node_child(node: *mut u8, child_index: usize) -> usize {
         let num_keys = Pager::get_internal_node_num_keys(node);
         if child_index > num_keys {
             println!("Tried to access child_num {} > num_keys {}", child_index, num_keys);
             exit(1);
         } else if child_index == num_keys {
-            Pager::get_internal_node_right_child(node)
+            let right_child = Pager::get_internal_node_right_child(node);
+            if right_child == INVALID_PAGE_NUM {
+                println!("Tried to access right child of node, but was invalid page");
+                exit(1);
+            }
+            right_child
         } else {
-            Pager::get_internal_node_cell_child(node, child_index)
+            let right_child = Pager::get_internal_node_cell_child(node, child_index);
+            if right_child == INVALID_PAGE_NUM {
+                println!("Tried to access child {} of node, but was invalid page", child_index);
+                exit(1);
+            }
+            right_child
         }
     }
 
-    fn get_internal_node_right_child(node: *mut u8) -> usize {
+    pub fn get_internal_node_right_child(node: *mut u8) -> usize {
         unsafe {
             let right_child_index: usize = 0;
             ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
@@ -261,15 +283,15 @@ impl Pager {
         }
     }
 
-    fn set_internal_node_right_child(node: *mut u8, cell_index: usize) {
+    pub fn set_internal_node_right_child(node: *mut u8, cell_index: usize) {
         unsafe {
-            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
-                                     &cell_index as *const usize as *mut u8,
+            ptr::copy_nonoverlapping(&cell_index as *const usize as *mut u8,
+                                     node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
                                      INTERNAL_NODE_RIGHT_CHILD_SIZE);
         }
     }
 
-    fn set_internal_node_cell_child(node: *mut u8, child_index: usize, key: usize) {
+    pub fn set_internal_node_cell_child(node: *mut u8, child_index: usize, key: usize) {
         unsafe {
             ptr::copy_nonoverlapping(&key as *const usize as *mut u8,
                                      node.add(INTERNAL_NODE_HEADER_SIZE + child_index * INTERNAL_NODE_CELL_SIZE),
@@ -277,7 +299,7 @@ impl Pager {
         }
     }
 
-    fn get_internal_node_cell_child(node: *mut u8, child_index: usize) -> usize {
+    pub fn get_internal_node_cell_child(node: *mut u8, child_index: usize) -> usize {
         unsafe {
             let key: usize = 0;
             ptr::copy_nonoverlapping(
@@ -288,7 +310,7 @@ impl Pager {
         }
     }
 
-    fn  get_internal_node_cell_key(node: *mut u8, cell_index: usize) -> usize {
+    pub fn get_internal_node_cell_key(node: *mut u8, cell_index: usize) -> usize {
         unsafe {
             let key: usize = 0;
             ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CHILD_SIZE),
@@ -298,7 +320,7 @@ impl Pager {
         }
     }
 
-    fn set_internal_node_cell_key(node: *mut u8, cell_index: usize, key: usize) {
+    pub fn set_internal_node_cell_key(node: *mut u8, cell_index: usize, key: usize) {
         unsafe {
             ptr::copy_nonoverlapping(&key as *const usize as *mut u8,
                                      node.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CHILD_SIZE),
@@ -314,7 +336,7 @@ impl Pager {
         }
     }
 
-    pub(crate) fn get_leaf_node_next_leaf(node: *mut u8) -> usize{
+    pub(crate) fn get_leaf_node_next_leaf(node: *mut u8) -> usize {
         unsafe {
             let next_leaf: usize = 0;
             ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
@@ -325,10 +347,11 @@ impl Pager {
     }
 
 
-    fn get_node_biggest_key(node: *mut u8) -> usize {
+    pub fn get_node_biggest_key(&mut self, node: *mut u8) -> usize {
         match Pager::get_node_type(node) {
             NodeType::Internal => {
-                Pager::get_internal_node_cell_key(node, Pager::get_internal_node_num_keys(node) - 1)
+                let right_child = self.get_page(Pager::get_internal_node_right_child(node));
+                self.get_node_biggest_key(right_child)
             }
             NodeType::Leaf => {
                 Pager::get_leaf_node_cell_key(node, Pager::get_leaf_node_cells_num(node) - 1)
@@ -350,7 +373,7 @@ impl Pager {
         let page: Option<&Page> = self.pages[page_num].as_ref();
 
         if page.is_none() {
-            return false
+            return false;
         }
 
         self.fd.seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64)).unwrap();
@@ -372,7 +395,35 @@ impl Pager {
     pub(crate) fn initialize_internal_node(node: *mut u8) {
         Pager::set_node_type(node, NodeType::Internal);
         Pager::set_root_node(node, false);
-        Pager::set_leaf_node_cells_num(node, 0);
+        Pager::set_internal_node_num_keys(node, 0);
+        /*
+         Necessary because the root page number is 0; by not initializing an internal
+         node's right child to an invalid page number when initializing the node, we may
+         end up with 0 as the node's right child, which makes the node a parent of the root
+         */
+        Pager::set_internal_node_right_child(node, INVALID_PAGE_NUM);
+    }
+
+    pub fn set_parent(node: *mut u8, parent_index: usize) {
+        unsafe {
+            ptr::copy_nonoverlapping(
+                &parent_index as *const usize as *mut u8,
+                node.add(PARENT_POINTER_OFFSET),
+                PARENT_POINTER_SIZE,
+            );
+        }
+    }
+
+    pub fn get_parent(node: *mut u8) -> usize {
+        unsafe {
+            let parent_index: usize = 0;
+            ptr::copy_nonoverlapping(
+                node.add(PARENT_POINTER_OFFSET),
+                &parent_index as *const usize as *mut u8,
+                PARENT_POINTER_SIZE,
+            );
+            parent_index
+        }
     }
 }
 
@@ -408,14 +459,14 @@ impl Table {
     }
 
     fn leaf_node_find(&mut self, page_index: usize, key: usize) -> Cursor {
-        let root = self.pager.get_page(page_index);
-        let cells_num = Pager::get_leaf_node_cells_num(root);
+        let node = self.pager.get_page(page_index);
+        let cells_num = Pager::get_leaf_node_cells_num(node);
 
         let mut min_index = 0;
         let mut right = cells_num;
         while right != min_index {
             let index = (min_index + right) / 2;
-            let key_at_index = Pager::get_leaf_node_cell_key(root, index);
+            let key_at_index = Pager::get_leaf_node_cell_key(node, index);
             if key == key_at_index {
                 return Cursor::at(self, page_index, index);
             }
@@ -429,23 +480,30 @@ impl Table {
         Cursor::at(self, page_index, min_index)
     }
 
-    fn internal_node_find(&mut self, page_index: usize, key: usize) -> Cursor {
-        let node = self.pager.get_page(page_index);
-        let keys_num = Pager::get_internal_node_num_keys(node);
-
+    pub fn internal_node_find_child(&mut self, node: *mut u8, key: usize) -> usize {
+        /*
+          Return the index of the child which should contain
+          the given key.
+        */
+        let num_keys = Pager::get_internal_node_num_keys(node);
         let mut min_index = 0;
-        let mut max_index  = keys_num;
-        while max_index  != min_index {
-            let index = (min_index + max_index ) / 2;
+        let mut max_index = num_keys;
+        while max_index != min_index {
+            let index = (min_index + max_index) / 2;
             let key_at_index = Pager::get_internal_node_cell_key(node, index);
-            if key_at_index >= key {
+            if key <= key_at_index {
                 max_index = index;
             } else {
                 min_index = index + 1;
             }
         }
+        min_index
+    }
 
-        let child_index = Pager::get_internal_node_child(node, min_index);
+    fn internal_node_find(&mut self, page_index: usize, key: usize) -> Cursor {
+        let node = self.pager.get_page(page_index);
+        let cell_index = self.internal_node_find_child(node, key);
+        let child_index = Pager::get_internal_node_child(node, cell_index);
         let child = self.pager.get_page(child_index);
         match Pager::get_node_type(child) {
             NodeType::Leaf => {
@@ -484,14 +542,32 @@ impl Table {
           New root node points to two children.
         */
         let root = self.pager.get_page(self.root_page_index);
+        let right_child = self.pager.get_page(right_child_page_index);
         let left_child_page_num = self.pager.get_unused_page_num();
         let left_child = self.pager.get_page(left_child_page_num);
+
+        if let NodeType::Internal = Pager::get_node_type(root) {
+            Pager::initialize_internal_node(right_child);
+            Pager::initialize_internal_node(left_child);
+        }
 
         /* Left child has data copied from old root */
         unsafe {
             ptr::copy_nonoverlapping(root, left_child, PAGE_SIZE);
             Pager::set_root_node(left_child, false)
         };
+
+        if let NodeType::Internal = Pager::get_node_type(left_child) {
+            let mut child: *mut u8;
+            let num_keys = Pager::get_internal_node_num_keys(left_child);
+            for i in 0..num_keys {
+                child = self.pager.get_page(Pager::get_internal_node_child(left_child, i));
+                Pager::set_parent(child, left_child_page_num);
+            }
+            child = self.pager.get_page(Pager::get_internal_node_right_child(left_child));
+            Pager::set_parent(child, left_child_page_num);
+        }
+
 
         /* Root node is a new internal node with one key and two children */
         Pager::initialize_internal_node(root);
@@ -500,21 +576,123 @@ impl Table {
         Pager::set_internal_node_num_keys(root, 1);
         // first child index = left child index
         Pager::set_internal_node_child(root, 0, left_child_page_num);
-        let left_child_biggest_key = Pager::get_node_biggest_key(left_child);
+        let left_child_biggest_key = self.pager.get_node_biggest_key(left_child);
         Pager::set_internal_node_cell_key(root, 0, left_child_biggest_key);
         Pager::set_internal_node_right_child(root, right_child_page_index);
+
+        Pager::set_parent(left_child, self.root_page_index);
+        Pager::set_parent(right_child, self.root_page_index);
     }
 
+    pub fn internal_node_split_and_insert(&mut self, parent_page_index: usize, child_page_index: usize) {
+        let mut old_page_index = parent_page_index;
+        let mut old_node = self.pager.get_page(parent_page_index);
+        let old_max = self.pager.get_node_biggest_key(old_node);
+
+        let child = self.pager.get_page(child_page_index);
+        let child_max = self.pager.get_node_biggest_key(child);
+
+        let new_page_index = self.pager.get_unused_page_num();
+        /*
+             Declaring a flag before updating pointers which
+             records whether this operation involves splitting the root -
+             if it does, we will insert our newly created node during
+             the step where the table's new root is created. If it does
+             not, we have to insert the newly created node into its parent
+             after the old node's keys have been transferred over. We are not
+             able to do this if the newly created node's parent is not a newly
+             initialized root node, because in that case its parent may have existing
+             keys aside from our old node which we are splitting. If that is true, we
+             need to find a place for our newly created node in its parent, and we
+             cannot insert it at the correct index if it does not yet have any keys
+         */
+        let splitting_root = Pager::is_root_node(old_node);
+        let parent;
+        let mut new_node: *mut u8 = null_mut();
+        if splitting_root {
+            self.create_new_root(new_page_index);
+            parent = self.pager.get_page(self.root_page_index);
+            /*
+           If we are splitting the root, we need to update old_node to point
+           to the new root's left child, new_page_num will already point to
+           the new root's right child
+            */
+            old_page_index = Pager::get_internal_node_child(parent, 0);
+            old_node = self.pager.get_page(old_page_index);
+        } else {
+            parent = self.pager.get_page(Pager::get_parent(old_node));
+            new_node = self.pager.get_page(new_page_index);
+            Pager::initialize_internal_node(new_node);
+        }
+
+        let mut old_num_keys = Pager::get_internal_node_num_keys(old_node);
+
+        let mut cur_page_num = Pager::get_internal_node_right_child(old_node);
+        let mut cur = self.pager.get_page(cur_page_num);
+
+        /*
+          First put right child into new node and set right child of old node to invalid page number
+          */
+        self.internal_node_insert(new_page_index, cur_page_num);
+        Pager::set_parent(cur, new_page_index);
+        Pager::set_internal_node_right_child(old_node, INVALID_PAGE_NUM);
+        /*
+         For each key until you get to the middle key, move the key and the child to the new node
+         */
+        for i in (INTERNAL_NODE_MAX_KEYS / 2 + 1..INTERNAL_NODE_MAX_KEYS - 1).rev() {
+            cur_page_num = Pager::get_internal_node_child(old_node, i);
+            cur = self.pager.get_page(cur_page_num);
+
+            self.internal_node_insert(new_page_index, cur_page_num);
+            Pager::set_parent(cur, new_page_index);
+            old_num_keys -= 1;
+            Pager::set_internal_node_num_keys(old_node, old_num_keys);
+        }
+
+        /*
+          Set child before middle key, which is now the highest key, to be node's right child,
+          and decrement number of keys
+        */
+        Pager::set_internal_node_right_child(old_node, Pager::get_internal_node_child(old_node, old_num_keys - 1));
+
+        old_num_keys -= 1;
+        Pager::set_internal_node_num_keys(old_node, old_num_keys);
+
+        /*
+      Determine which of the two nodes after the split should contain the child to be inserted,
+      and insert the child
+      */
+        let max_after_split = self.pager.get_node_biggest_key(old_node);
+
+        let destination_page_index = if child_max < max_after_split {
+            old_page_index
+        } else {
+            new_page_index
+        };
+
+        self.internal_node_insert(destination_page_index, child_page_index);
+        Pager::set_parent(child, destination_page_index);
+
+        let old_key_cell_index = self.internal_node_find_child(parent, old_max);
+        Pager::set_internal_node_cell_key(parent, old_key_cell_index, self.pager.get_node_biggest_key(old_node));
+
+        if !splitting_root {
+            self.internal_node_insert(Pager::get_parent(old_node), new_page_index);
+            Pager::set_parent(new_node, Pager::get_parent(old_node));
+        }
+    }
 
     pub fn print_tree(&mut self, page_num: usize, indentation_level: usize) {
         let node = self.pager.get_page(page_num);
         match Pager::get_node_type(node) {
             NodeType::Leaf => {
-                let num_keys = Pager::get_leaf_node_cells_num(node);
                 indent(indentation_level);
+                println!("* node {:p}, index: {}: ", node, page_num);
+                let num_keys = Pager::get_leaf_node_cells_num(node);
+                indent(indentation_level + 1);
                 println!("- leaf (size {})", num_keys);
                 for i in 0..num_keys {
-                    indent(indentation_level + 1);
+                    indent(indentation_level + 2);
                     println!("- {}", Pager::get_leaf_node_cell_key(node, i));
                 }
             }
@@ -522,16 +700,77 @@ impl Table {
                 let num_keys = Pager::get_internal_node_num_keys(node);
                 indent(indentation_level);
                 println!("- internal (size {})", num_keys);
-                for i in 0..num_keys {
-                    let child = Pager::get_internal_node_child(node, i);
-                    self.print_tree(child, indentation_level + 1);
+                if num_keys > 0 {
+                    let mut child: usize = 0;
+                    for i in 0..num_keys {
+                        let child = Pager::get_internal_node_child(node, i);
+                        self.print_tree(child, indentation_level + 1);
 
-                    indent(indentation_level + 1);
-                    println!("- key {}", Pager::get_internal_node_cell_key(node, i));
+                        indent(indentation_level + 1);
+                        println!("- key {}", Pager::get_internal_node_cell_key(node, i));
+                    }
+                    child = Pager::get_internal_node_right_child(node);
+                    self.print_tree(child, indentation_level + 1);
                 }
-                let child = Pager::get_internal_node_right_child(node);
-                self.print_tree(child, indentation_level + 1);
             }
+        }
+    }
+
+    pub fn internal_node_insert(&mut self, parent_index: usize, child_index: usize) {
+        /*
+       +  Add a new child/key pair to parent that corresponds to child
+       +  */
+
+        let parent = self.pager.get_page(parent_index);
+        let child = self.pager.get_page(child_index);
+        let child_max_key = self.pager.get_node_biggest_key(child);
+        // cell that contains the key -> position of the child in the parent cells
+        let cell_index = self.internal_node_find_child(parent, child_max_key);
+
+        let original_num_keys = Pager::get_internal_node_num_keys(parent);
+
+        /*
+          An internal node with a right child of INVALID_PAGE_NUM is empty
+          */
+        if original_num_keys >= INTERNAL_NODE_MAX_KEYS {
+            self.internal_node_split_and_insert(parent_index, child_index);
+            return;
+        }
+
+        let right_child_page_index = Pager::get_internal_node_right_child(parent);
+        /*
+        An internal node with a right child of INVALID_PAGE_NUM is empty
+        */
+        if right_child_page_index == INVALID_PAGE_NUM {
+            Pager::set_internal_node_right_child(parent, child_index);
+            return;
+        }
+
+        let right_child = self.pager.get_page(right_child_page_index);
+
+        /*
+        If we are already at the max number of cells for a node, we cannot increment
+        before splitting. Incrementing without inserting a new key/child pair
+        and immediately calling internal_node_split_and_insert has the effect
+        of creating a new key at (max_cells + 1) with an uninitialized value
+        */
+        Pager::set_internal_node_num_keys(parent, original_num_keys + 1);
+
+        let biggest_key = self.pager.get_node_biggest_key(right_child);
+        if child_max_key > biggest_key {
+            /* Replace right child */
+            Pager::set_internal_node_child(parent, original_num_keys, right_child_page_index);
+            Pager::set_internal_node_cell_key(parent, original_num_keys, biggest_key);
+            Pager::set_internal_node_right_child(parent, child_index);
+        } else {
+            /* Make room for the new cell */
+            unsafe {
+                copy(Pager::internal_node_cell(parent, cell_index),
+                     Pager::internal_node_cell(parent, cell_index + 1),
+                     INTERNAL_NODE_CELL_SIZE * (original_num_keys - cell_index))
+            }
+            Pager::set_internal_node_child(parent, cell_index, child_index);
+            Pager::set_internal_node_cell_key(parent, cell_index, child_max_key);
         }
     }
 }
