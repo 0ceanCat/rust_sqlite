@@ -5,11 +5,15 @@ mod enums;
 mod common;
 mod sql_engine;
 
+use std::io::Write;
 use std::process::exit;
 use core::*;
 use enums::*;
+use crate::sql_engine::sql_parser::SqlParser;
+use crate::sql_engine::sql_structs::SelectStmt;
+
 fn main() -> Result<(), &'static str> {
-    let file_name = "./db";
+    /*let file_name = "./db";
     let pager = Pager::open(file_name);
     let mut table = Table::new(pager);
     loop {
@@ -43,7 +47,12 @@ fn main() -> Result<(), &'static str> {
                 println!("{}", error)
             }
         }
-    }
-
+    }*/
+    let mut input = String::new();
+    print!("sql>");
+    std::io::stdout().flush().expect("flush failed!");
+    std::io::stdin().read_line(&mut input).unwrap();
+    let result = SqlParser::parse_sql(input)?;
+    println!("{:?}", result.print_stmt());
     Ok(())
 }

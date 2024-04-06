@@ -1,12 +1,21 @@
+use std::f32::consts::E;
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 
 pub(crate) trait SqlStmt{
+    fn print_stmt(&self) {
+    }
 }
 
-impl SqlStmt for SelectStmt{}
+impl SqlStmt for SelectStmt{
+    fn print_stmt(&self) {
+        println!("selected fields: {:?}", self.selected_fields);
+        println!("table name: {:?}", self.table);
+        println!("where stmt: {:?}", self.where_stmt);
+    }
+}
 impl SqlStmt for InsertStmt{}
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct SelectStmt {
     pub(crate) selected_fields: Vec<String>,
     pub(crate) table: String,
@@ -29,7 +38,7 @@ struct InsertStmt {
     values: Vec<String>
 }
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct WhereStmt {
     condition_exprs: Vec<ConditionExpr>
 }
@@ -42,7 +51,7 @@ impl WhereStmt {
     }
 }
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct Condition {
     field: String,
     operator: Operator,
@@ -59,7 +68,7 @@ impl Condition {
     }
 }
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct ConditionExpr{
     logical_op: LogicalOperator,
     condition: Condition
@@ -74,17 +83,17 @@ impl ConditionExpr {
     }
 }
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) enum Operator {
-    EQUALS,
+    EQUALS(bool),
     GT,
     GTE,
     LT,
     LTE,
-    IN
+    IN(bool)
 }
 
-#[derive(PartialEq, PartialOrd, Clone, Copy)]
+#[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
 pub(crate) enum LogicalOperator{
     OR,
     AND
@@ -93,17 +102,19 @@ pub(crate) enum LogicalOperator{
 impl Operator{
     fn operate(&self, a: Value, b: Value) -> bool {
         match self {
-            EQUALS => { a == b }
+            EQUALS(negative) => { (a == b) ^ negative }
             GT => { a > b }
             GTE => { a >= b }
             LT => { a < b }
             LTE => { a <= b }
-            IN => {
-                if let Value::Array(vec) = b {
+            IN(negative) => {
+                let r = if let Value::Array(vec) = b {
                     vec.contains(&a)
                 } else {
                     false
-                }
+                };
+
+                r ^ negative
             }
         }
     }
@@ -114,8 +125,11 @@ impl TryFrom<String> for Operator {
 
     fn try_from(value: String) -> Result<Operator, Self::Error> {
         match value.as_str() {
-            "equals" => {
-                Ok(EQUALS)
+            "=" => {
+                Ok(EQUALS(false))
+            }
+            "!=" => {
+                Ok(EQUALS(true))
             }
             ">" => {
                 Ok(GT)
@@ -130,7 +144,10 @@ impl TryFrom<String> for Operator {
                 Ok(LTE)
             }
             "in" => {
-                Ok(IN)
+                Ok(IN(false))
+            }
+            "not in" => {
+                Ok(IN(true))
             }
             _ => {
                 Err("operator does not exist;")
@@ -139,7 +156,7 @@ impl TryFrom<String> for Operator {
     }
 }
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) enum Value {
     Integer(i32),
     Float(f32),

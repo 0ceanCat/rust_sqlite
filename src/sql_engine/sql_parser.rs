@@ -1,7 +1,9 @@
-use std::array;
-use std::ptr::addr_of;
 use crate::sql_engine::sql_structs::{SqlStmt, SelectStmt, WhereStmt, ConditionExpr, Condition, Operator, LogicalOperator, Value};
 use crate::sql_engine::keywords::*;
+
+static BLANK_SYMBOLS: [char; 4] = [' ', '\t', '\n', '\r'];
+static TOKEN_SEPARATORS: [char; 8] = [' ', ',', '\t', '\n', '\r', '>', '<', '='];
+static OPERATORS_SYMBOLS: [char; 4] = [ '>', '<', '=', '!'];
 
 #[derive(Clone)]
 pub struct SqlParser {
@@ -10,14 +12,12 @@ pub struct SqlParser {
 }
 
 impl SqlParser {
-    fn parse_sql(input_stream: String) -> Result<Box<dyn SqlStmt>, &'static str> {
+    pub fn parse_sql(input_stream: String) -> Result<Box<dyn SqlStmt>, &'static str> {
         let vec = input_stream.chars().collect();
-        let mut parser = SqlParser {
+        SqlParser {
             position: 0,
             input: vec,
-        };
-        let result = parser.parse();
-        result
+        }.parse()
     }
 
     fn parse(&mut self) -> Result<Box<dyn SqlStmt>, &'static str> {
@@ -33,7 +33,7 @@ impl SqlParser {
     }
 
     fn skip_white_spaces(&mut self) {
-        while !self.is_end() && matches!(self.current_char(), '\t' | '\n' | ' ') {
+        while !self.is_end() && BLANK_SYMBOLS.contains(&self.current_char()) {
             self.advance();
         }
     }
@@ -43,12 +43,13 @@ impl SqlParser {
     }
 
     fn is_end(&self) -> bool {
-        self.position == self.input.len()
+        self.position >= self.input.len()
     }
 
     fn read_token(&mut self) -> String {
         let mut token = String::new();
-        while !self.is_end() && matches!(self.current_char(), ' ' | ',') {
+
+        while !self.is_end() && !TOKEN_SEPARATORS.contains(&self.current_char()) {
             token.push(self.current_char());
             self.advance();
         }
@@ -97,25 +98,29 @@ impl<'a> SelectStmtParser<'a> {
 
         self.sql_parser.skip_white_spaces();
 
-        Ok(SelectStmt::new(selected_fields, table, None))
+        let where_stmt: Option<WhereStmt> = if self.sql_parser.is_end() {
+            None
+        } else {
+            Some(WhereStmtParser { sql_parser: self.sql_parser }.parse()?)
+        };
+
+        Ok(SelectStmt::new(selected_fields, table, where_stmt))
     }
 
     fn parse_selected_fields(&mut self) -> Result<Vec<String>, &'static str> {
         let mut fields = Vec::<String>::new();
-        let mut more_than_one = false;
+        self.sql_parser.skip_white_spaces();
 
-        while !&self.sql_parser.starts_with(FROM) {
-            if more_than_one {
-                if !self.sql_parser.is_current_char_comma() {
-                    return Err("Syntax error, there must be a ',' between two selected fields.");
-                }
+        while !self.sql_parser.is_end() && !&self.sql_parser.starts_with(FROM) {
+            self.sql_parser.skip_white_spaces();
+            let field = self.sql_parser.read_token();
+            fields.push(field);
+            self.sql_parser.skip_white_spaces();
+
+            if self.sql_parser.is_current_char_comma() {
                 self.sql_parser.advance(); // skip ','
+                self.sql_parser.skip_white_spaces();
             }
-
-            self.sql_parser.skip_white_spaces();
-            fields.push(self.sql_parser.read_token());
-            self.sql_parser.skip_white_spaces();
-            more_than_one = true;
         }
 
         Ok(fields)
@@ -142,7 +147,7 @@ impl<'a> WhereStmtParser<'a> {
         let mut condition_exprs = Vec::<ConditionExpr>::new();
         let mut logical_op = LogicalOperator::AND;
 
-        while !&self.sql_parser.starts_with(ORDER_BY) {
+        while !self.sql_parser.is_end() && !&self.sql_parser.starts_with(ORDER_BY) {
             condition_exprs.push(self.parse_condition_expr(logical_op)?);
         }
 
@@ -157,31 +162,16 @@ impl<'a> WhereStmtParser<'a> {
         self.sql_parser.skip_white_spaces();
         let field = self.sql_parser.read_token();
         self.sql_parser.skip_white_spaces();
-        let op = Operator::try_from(self.sql_parser.read_token())?;
+        let op = {
+            OperatorParser{sql_parser: self.sql_parser}.parse()?
+        };
         self.sql_parser.skip_white_spaces();
         let v = match self.sql_parser.current_char() {
-            '[' => {
-                let mut array = Vec::<Value>::new();
-                self.sql_parser.advance();
-                while self.sql_parser.current_char() != ']' {
-                    self.sql_parser.skip_white_spaces();
-                    array.push(Value::String(self.sql_parser.read_token()));
-                    self.sql_parser.skip_white_spaces();
-                }
-                self.sql_parser.advance();
-                Value::Array(array)
-            }
-            '\'' => {
-                Value::String(self.sql_parser.read_token())
-            }
-            '\"' => {
-                Value::String(self.sql_parser.read_token())
-            }
-            _ => {
-                Value::Integer(self.sql_parser.read_token().parse().unwrap())
-            }
+            '[' => {ValueParser { sql_parser: self.sql_parser }.parse_array()?}
+            '\"' => {ValueParser { sql_parser: self.sql_parser }.parse_string()?}
+            _ => {ValueParser { sql_parser: self.sql_parser }.parse_number()?}
         };
-
+        self.sql_parser.skip_white_spaces();
         Ok(Condition::new(field, op, v))
     }
 }
@@ -195,15 +185,13 @@ impl<'a> ValueParser<'a> {
         match self.sql_parser.current_char() {
             '[' => { self.parse_array() }
             '\"' => { self.parse_string() }
-            _ => {self.parse_number()}
+            _ => { self.parse_number() }
         }
     }
 
     fn parse_array(&mut self) -> Result<Value, &'static str> {
         let mut array = Vec::<Value>::new();
         self.sql_parser.advance(); // skip '['
-
-        let mut value_type: Option<&Value> = None;
 
         while !self.sql_parser.is_end() && self.sql_parser.current_char() != ']' {
             self.sql_parser.skip_white_spaces();
@@ -227,7 +215,7 @@ impl<'a> ValueParser<'a> {
             return Err("Detected an array value, but it is not closed.");
         }
 
-        self.sql_parser.advance();
+        self.sql_parser.advance(); // skip ']'
         Ok(Value::Array(array))
     }
 
@@ -260,7 +248,7 @@ impl<'a> ValueParser<'a> {
                 let mut base = 1.0;
                 if let Value::Integer(nb) = self.parse_int()? {
                     let second_part = nb as f32;
-                    while second_part / base > 0.0 {
+                    while second_part / base > 1.0 {
                         base *= 10.0
                     }
                     result = Value::Float(sign as f32 * (first_part as f32 + second_part / base))
@@ -272,12 +260,11 @@ impl<'a> ValueParser<'a> {
         Ok(result)
     }
     fn parse_int(&mut self) -> Result<Value, &'static str> {
-        let c = self.sql_parser.current_char();
-        match c {
+        match self.sql_parser.current_char() {
             '0'..='9' => {
                 let mut result = 0;
-                while !self.sql_parser.is_end() && ('0'..='9').contains(&c) {
-                    result = result * 10 + ValueParser::char_to_integer(c);
+                while !self.sql_parser.is_end() && ('0'..='9').contains(&self.sql_parser.current_char()) {
+                    result = result * 10 + ValueParser::char_to_integer(self.sql_parser.current_char());
                     self.sql_parser.advance();
                 }
                 return Ok(Value::Integer(result));
@@ -288,5 +275,40 @@ impl<'a> ValueParser<'a> {
 
     fn char_to_integer(c: char) -> i32 {
         c as i32 - 0x30
+    }
+}
+
+struct OperatorParser<'a>{
+    sql_parser: &'a mut SqlParser
+}
+
+impl<'a> OperatorParser<'a> {
+    fn parse(&mut self) -> Result<Operator, &'static str> {
+        self.sql_parser.skip_white_spaces();
+        let mut operator = String::new();
+
+        if !self.sql_parser.is_end() && self.sql_parser.starts_with(NOT) {
+            operator.push_str("not ");
+            self.sql_parser.position += NOT.len();
+            self.sql_parser.skip_white_spaces();
+        }
+
+        while !self.sql_parser.is_end() && OPERATORS_SYMBOLS.contains(&self.sql_parser.current_char()) {
+            operator.push(self.sql_parser.current_char());
+            self.sql_parser.advance();
+        }
+
+        Operator::try_from(operator)
+    }
+}
+
+fn check_key_word(k: &String) -> Result<(), &'static str> {
+    match is_key_words(k) {
+        true => {
+            Ok(())
+        }
+        false => {
+            Err("You can not use keyword as a field.")
+        }
     }
 }
