@@ -3,11 +3,11 @@ mod config;
 mod cursor;
 mod enums;
 mod common;
+mod sql_engine;
 
 use std::process::exit;
 use core::*;
 use enums::*;
-
 fn main() -> Result<(), &'static str> {
     let file_name = "./db";
     let pager = Pager::open(file_name);
@@ -44,5 +44,6 @@ fn main() -> Result<(), &'static str> {
             }
         }
     }
+
     Ok(())
 }
