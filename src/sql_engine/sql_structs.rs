@@ -1,4 +1,4 @@
-use std::f32::consts::E;
+use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 
 pub(crate) trait SqlStmt{
@@ -13,7 +13,11 @@ impl SqlStmt for SelectStmt{
         println!("where stmt: {:?}", self.where_stmt);
     }
 }
-impl SqlStmt for InsertStmt{}
+impl SqlStmt for WhereStmt{
+    fn print_stmt(&self) {
+        println!("{:?}", self.condition_exprs)
+    }
+}
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct SelectStmt {
@@ -53,9 +57,9 @@ impl WhereStmt {
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct Condition {
-    field: String,
-    operator: Operator,
-    value: Value,
+    pub field: String,
+    pub operator: Operator,
+    pub value: Value,
 }
 
 impl Condition {
@@ -97,6 +101,22 @@ pub(crate) enum Operator {
 pub(crate) enum LogicalOperator{
     OR,
     AND
+}
+
+impl TryFrom<String> for LogicalOperator {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "or"  => {
+                Ok(OR)
+            }
+            "and" => {
+                Ok(AND)
+            }
+            _ => { Err("Unknown logical operator") }
+        }
+    }
 }
 
 impl Operator{

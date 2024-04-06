@@ -1,9 +1,11 @@
+use std::collections::HashSet;
+use std::f32::consts::E;
 use crate::sql_engine::sql_structs::{SqlStmt, SelectStmt, WhereStmt, ConditionExpr, Condition, Operator, LogicalOperator, Value};
 use crate::sql_engine::keywords::*;
 
 static BLANK_SYMBOLS: [char; 4] = [' ', '\t', '\n', '\r'];
-static TOKEN_SEPARATORS: [char; 8] = [' ', ',', '\t', '\n', '\r', '>', '<', '='];
-static OPERATORS_SYMBOLS: [char; 4] = [ '>', '<', '=', '!'];
+static TOKEN_SEPARATORS: [char; 5] = [' ', ',', '\t', '\n', '\r'];
+static OPERATORS_SYMBOLS: [char; 4] = ['>', '<', '=', '!'];
 
 #[derive(Clone)]
 pub struct SqlParser {
@@ -46,14 +48,17 @@ impl SqlParser {
         self.position >= self.input.len()
     }
 
-    fn read_token(&mut self) -> String {
+    fn read_token(&mut self) -> Result<String, &'static str> {
         let mut token = String::new();
 
         while !self.is_end() && !TOKEN_SEPARATORS.contains(&self.current_char()) {
+            if OPERATORS_SYMBOLS.contains(&self.current_char()){
+                break
+            }
             token.push(self.current_char());
             self.advance();
         }
-        token
+        Ok(token)
     }
 
     fn current_char(&self) -> char {
@@ -66,6 +71,9 @@ impl SqlParser {
 
     fn starts_with(&self, s: &str) -> bool {
         let input = &self.input[self.position..];
+        if input.len() == 0 {
+            return false;
+        }
         for (i, c) in s.char_indices() {
             if input[i] != c {
                 return false;
@@ -113,13 +121,23 @@ impl<'a> SelectStmtParser<'a> {
 
         while !self.sql_parser.is_end() && !&self.sql_parser.starts_with(FROM) {
             self.sql_parser.skip_white_spaces();
-            let field = self.sql_parser.read_token();
+            let field = self.sql_parser.read_token()?;
+
+            if fields.contains(&field) {
+                return Err("Duplicated selected column.")
+            }
+
+            check_key_word(&field)?;
+            check_valid_field_name(&field)?;
             fields.push(field);
+
             self.sql_parser.skip_white_spaces();
 
             if self.sql_parser.is_current_char_comma() {
                 self.sql_parser.advance(); // skip ','
                 self.sql_parser.skip_white_spaces();
+            } else if !&self.sql_parser.starts_with(FROM) {
+                return Err("Syntax error, there must be a ',' between two selected fields.");
             }
         }
 
@@ -127,7 +145,7 @@ impl<'a> SelectStmtParser<'a> {
     }
 
     fn parse_table_name(&mut self) -> Result<String, &'static str> {
-        let string = self.sql_parser.read_token();
+        let string = self.sql_parser.read_token()?;
         if string.is_empty() {
             return Err("Syntax error, table is not specified.");
         }
@@ -145,10 +163,26 @@ impl<'a> WhereStmtParser<'a> {
         self.sql_parser.skip_white_spaces();
 
         let mut condition_exprs = Vec::<ConditionExpr>::new();
-        let mut logical_op = LogicalOperator::AND;
+        let mut logical_op = Some(LogicalOperator::AND);
 
-        while !self.sql_parser.is_end() && !&self.sql_parser.starts_with(ORDER_BY) {
-            condition_exprs.push(self.parse_condition_expr(logical_op)?);
+        while !self.sql_parser.is_end() {
+            let condition_expr = self.parse_condition_expr(logical_op.unwrap())?;
+            condition_exprs.push(condition_expr);
+            logical_op = None;
+
+            if self.sql_parser.is_end() || self.sql_parser.starts_with(ORDER_BY) {
+                break
+            }
+
+            logical_op = Some(LogicalOperator::try_from(self.sql_parser.read_token()?)?);
+        }
+
+        if logical_op.is_some() {
+            return Err("Syntax error, Where statement is not complete.")
+        }
+
+        if condition_exprs.is_empty() {
+            return Err("Syntax error, empty Where statement detected.")
         }
 
         Ok(WhereStmt::new(condition_exprs))
@@ -160,17 +194,16 @@ impl<'a> WhereStmtParser<'a> {
 
     fn parse_condition(&mut self) -> Result<Condition, &'static str> {
         self.sql_parser.skip_white_spaces();
-        let field = self.sql_parser.read_token();
+        let field = self.sql_parser.read_token()?;
+        check_key_word(&field)?;
+        check_valid_field_name(&field)?;
+
         self.sql_parser.skip_white_spaces();
         let op = {
-            OperatorParser{sql_parser: self.sql_parser}.parse()?
+            OperatorParser { sql_parser: self.sql_parser }.parse()?
         };
         self.sql_parser.skip_white_spaces();
-        let v = match self.sql_parser.current_char() {
-            '[' => {ValueParser { sql_parser: self.sql_parser }.parse_array()?}
-            '\"' => {ValueParser { sql_parser: self.sql_parser }.parse_string()?}
-            _ => {ValueParser { sql_parser: self.sql_parser }.parse_number()?}
-        };
+        let v = ValueParser { sql_parser: self.sql_parser }.parse()?;
         self.sql_parser.skip_white_spaces();
         Ok(Condition::new(field, op, v))
     }
@@ -185,7 +218,9 @@ impl<'a> ValueParser<'a> {
         match self.sql_parser.current_char() {
             '[' => { self.parse_array() }
             '\"' => { self.parse_string() }
-            _ => { self.parse_number() }
+            '0'..='9' | '+' | '-' => { self.parse_number() }
+            't' | 'f' => { self.parse_boolean() }
+            _ => { return Err("Unknown type of value detected."); }
         }
     }
 
@@ -203,12 +238,15 @@ impl<'a> ValueParser<'a> {
                 _ => {}
             }
 
-            if !array.is_empty() && Value::are_same_variant(&array[0], &value) {
+            if !array.is_empty() && !Value::are_same_variant(&array[0], &value) {
                 return Err("All element of an array must be the same type.");
             }
 
             array.push(value);
             self.sql_parser.skip_white_spaces();
+            if self.sql_parser.current_char() == ',' {
+                self.sql_parser.advance();
+            }
         }
 
         if self.sql_parser.current_char() != ']' {
@@ -259,6 +297,18 @@ impl<'a> ValueParser<'a> {
         }
         Ok(result)
     }
+
+    pub(crate) fn parse_boolean(&mut self) -> Result<Value, &'static str> {
+        if self.sql_parser.starts_with("true") {
+            self.sql_parser.position += "true".len();
+            return Ok(Value::Boolean(true));
+        } else if self.sql_parser.starts_with("false") {
+            self.sql_parser.position += "false".len();
+            return Ok(Value::Boolean(false));
+        };
+        Err("Unknown type of value")
+    }
+
     fn parse_int(&mut self) -> Result<Value, &'static str> {
         match self.sql_parser.current_char() {
             '0'..='9' => {
@@ -278,8 +328,8 @@ impl<'a> ValueParser<'a> {
     }
 }
 
-struct OperatorParser<'a>{
-    sql_parser: &'a mut SqlParser
+struct OperatorParser<'a> {
+    sql_parser: &'a mut SqlParser,
 }
 
 impl<'a> OperatorParser<'a> {
@@ -303,7 +353,7 @@ impl<'a> OperatorParser<'a> {
 }
 
 fn check_key_word(k: &String) -> Result<(), &'static str> {
-    match is_key_words(k) {
+    match !is_key_words(k) {
         true => {
             Ok(())
         }
@@ -311,4 +361,19 @@ fn check_key_word(k: &String) -> Result<(), &'static str> {
             Err("You can not use keyword as a field.")
         }
     }
+}
+
+fn check_valid_field_name(k: &String) -> Result<(), &'static str> {
+    if let Ok(_) = k.parse::<i32>() {
+        return Err("Invalid field name detected.");
+    }
+    if let Ok(_) = k.parse::<f32>() {
+        return Err("Invalid field name detected.");
+    }
+    for c in k.chars() {
+        if !c.is_ascii_alphabetic() && c != '_' {
+            return Err("Invalid field name detected.");
+        }
+    }
+    Ok(())
 }
