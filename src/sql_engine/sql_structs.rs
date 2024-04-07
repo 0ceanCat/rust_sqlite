@@ -1,19 +1,19 @@
 use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 
-pub(crate) trait SqlStmt{
-    fn print_stmt(&self) {
-    }
+pub(crate) trait SqlStmt {
+    fn print_stmt(&self) {}
 }
 
-impl SqlStmt for SelectStmt{
+impl SqlStmt for SelectStmt {
     fn print_stmt(&self) {
         println!("selected fields: {:?}", self.selected_fields);
         println!("table name: {:?}", self.table);
         println!("where stmt: {:?}", self.where_stmt);
     }
 }
-impl SqlStmt for WhereStmt{
+
+impl SqlStmt for WhereStmt {
     fn print_stmt(&self) {
         println!("{:?}", self.condition_exprs)
     }
@@ -26,12 +26,12 @@ pub(crate) struct SelectStmt {
     pub(crate) where_stmt: Option<WhereStmt>,
 }
 
-impl SelectStmt{
+impl SelectStmt {
     pub(crate) fn new(selected_fields: Vec<String>, table: String, where_stmt: Option<WhereStmt>) -> SelectStmt {
-        SelectStmt{
+        SelectStmt {
             selected_fields,
             table,
-            where_stmt
+            where_stmt,
         }
     }
 }
@@ -39,7 +39,7 @@ impl SelectStmt{
 struct InsertStmt {
     table: String,
     fields: Vec<String>,
-    values: Vec<String>
+    values: Vec<String>,
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
@@ -56,33 +56,33 @@ impl WhereStmt {
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
+pub(crate) struct ConditionExpr {
+    conditions: Vec<Condition>,
+}
+
+impl ConditionExpr {
+    pub(crate) fn new(conditions: Vec<Condition>) -> ConditionExpr {
+        ConditionExpr {
+            conditions,
+        }
+    }
+}
+
+#[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct Condition {
+    pub logical_operator: LogicalOperator,
     pub field: String,
     pub operator: Operator,
     pub value: Value,
 }
 
 impl Condition {
-    pub(crate) fn new(field: String, operator: Operator, value: Value) -> Condition {
+    pub(crate) fn new(logical_operator: LogicalOperator,field: String, operator: Operator, value: Value) -> Condition {
         Condition {
+            logical_operator,
             field,
             operator,
-            value
-        }
-    }
-}
-
-#[derive(PartialEq, PartialOrd, Debug)]
-pub(crate) struct ConditionExpr{
-    logical_op: LogicalOperator,
-    condition: Condition
-}
-
-impl ConditionExpr {
-    pub(crate) fn new(logical_op: LogicalOperator, condition: Condition) -> ConditionExpr {
-        ConditionExpr{
-            logical_op,
-            condition
+            value,
         }
     }
 }
@@ -94,21 +94,21 @@ pub(crate) enum Operator {
     GTE,
     LT,
     LTE,
-    IN(bool)
+    IN(bool),
 }
 
 #[derive(PartialEq, PartialOrd, Clone, Copy, Debug)]
-pub(crate) enum LogicalOperator{
+pub(crate) enum LogicalOperator {
     OR,
-    AND
+    AND,
 }
 
-impl TryFrom<String> for LogicalOperator {
+impl TryFrom<&str> for LogicalOperator {
     type Error = &'static str;
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match value.as_str() {
-            "or"  => {
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "or" => {
                 Ok(OR)
             }
             "and" => {
@@ -119,7 +119,7 @@ impl TryFrom<String> for LogicalOperator {
     }
 }
 
-impl Operator{
+impl Operator {
     fn operate(&self, a: Value, b: Value) -> bool {
         match self {
             EQUALS(negative) => { (a == b) ^ negative }
@@ -141,7 +141,7 @@ impl Operator{
 }
 
 impl TryFrom<String> for Operator {
-    type Error = &'static str;
+    type Error = String;
 
     fn try_from(value: String) -> Result<Operator, Self::Error> {
         match value.as_str() {
@@ -170,7 +170,7 @@ impl TryFrom<String> for Operator {
                 Ok(IN(true))
             }
             _ => {
-                Err("operator does not exist;")
+                Err(format!("operator `{}` does not exist;", value))
             }
         }
     }
@@ -183,7 +183,7 @@ pub(crate) enum Value {
     Boolean(bool),
     String(String),
     Array(Vec<Value>),
-    SelectStmt(SelectStmt)
+    SelectStmt(SelectStmt),
 }
 
 impl Value {
@@ -213,35 +213,35 @@ impl Value {
         }
     }
 
-    fn unwrap_as_int(&self) -> Result<&i32, &str>{
+    fn unwrap_as_int(&self) -> Result<&i32, &str> {
         match self {
             Value::Integer(v) => Ok(v),
             _ => Err("Current Value is not an Integer.")
         }
     }
 
-    fn unwrap_as_float(&self) -> Result<&f32, &str>{
+    fn unwrap_as_float(&self) -> Result<&f32, &str> {
         match self {
             Value::Float(v) => Ok(v),
             _ => Err("Current Value is not a Float.")
         }
     }
 
-    fn unwrap_as_string(&self) -> Result<&String, &str>{
+    fn unwrap_as_string(&self) -> Result<&String, &str> {
         match self {
             Value::String(v) => Ok(v),
             _ => Err("Current Value is not a String.")
         }
     }
 
-    fn unwrap_as_array(&self) -> Result<&Vec<Value>, &str>{
+    fn unwrap_as_array(&self) -> Result<&Vec<Value>, &str> {
         match self {
             Value::Array(v) => Ok(v),
             _ => Err("Current Value is not an Array.")
         }
     }
 
-    fn unwrap_as_bool(&self) -> Result<&bool, &str>{
+    fn unwrap_as_bool(&self) -> Result<&bool, &str> {
         match self {
             Value::Boolean(v) => Ok(v),
             _ => Err("Current Value is not a Boolean.")

@@ -12,7 +12,7 @@ use enums::*;
 use crate::sql_engine::sql_parser::SqlParser;
 use crate::sql_engine::sql_structs::SelectStmt;
 
-fn main() -> Result<(), &'static str> {
+fn main() -> Result<(), String> {
     /*let file_name = "./db";
     let pager = Pager::open(file_name);
     let mut table = Table::new(pager);
