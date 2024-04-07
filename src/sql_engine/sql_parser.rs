@@ -1,8 +1,8 @@
-use crate::sql_engine::sql_structs::{SqlStmt, SelectStmt, WhereStmt, ConditionExpr, Condition, Operator, LogicalOperator, Value};
+use crate::sql_engine::sql_structs::{SqlStmt, SelectStmt, WhereStmt, InsertStmt, ConditionExpr, Condition, Operator, LogicalOperator, Value};
 use crate::sql_engine::keywords::*;
 
 static BLANK_SYMBOLS: [char; 4] = [' ', '\t', '\n', '\r'];
-static TOKEN_SEPARATORS: [char; 5] = [' ', ',', '\t', '\n', '\r'];
+static TOKEN_SEPARATORS: [char; 7] = [' ', ',', '(', ')', '\t', '\n', '\r'];
 static OPERATORS_SYMBOLS: [char; 4] = ['>', '<', '=', '!'];
 
 #[derive(Clone)]
@@ -27,6 +27,10 @@ impl SqlParser {
             let mut select_stmt_parser = SelectStmtParser { sql_parser: self };
             let select_stmt = select_stmt_parser.parse()?;
             Ok(Box::new(select_stmt))
+        } else if self.starts_with(INSERT) {
+            let mut insert_stmt_parser = InsertStmtParser { sql_parser: self };
+            let insert_stmt = insert_stmt_parser.parse()?;
+            Ok(Box::new(insert_stmt))
         } else {
             Err(String::from("Unknown sql statement."))
         }
@@ -47,16 +51,26 @@ impl SqlParser {
     }
 
     fn read_token(&mut self) -> Result<String, String> {
+        self.skip_white_spaces();
         let mut token = String::new();
 
         while !self.is_end() && !TOKEN_SEPARATORS.contains(&self.current_char()) {
-            if OPERATORS_SYMBOLS.contains(&self.current_char()){
-                break
+            if OPERATORS_SYMBOLS.contains(&self.current_char()) {
+                break;
             }
             token.push(self.current_char());
             self.advance();
         }
+        self.skip_white_spaces();
         Ok(token)
+    }
+
+    fn parse_table_name(&mut self) -> Result<String, String> {
+        let string = self.read_token()?;
+        if string.is_empty() {
+            return Err(String::from("Syntax error, table is not specified."));
+        }
+        Ok(string)
     }
 
     fn current_char(&self) -> char {
@@ -100,7 +114,7 @@ impl<'a> SelectStmtParser<'a> {
 
         self.sql_parser.skip_white_spaces();
 
-        let table = self.parse_table_name()?;
+        let table = self.sql_parser.parse_table_name()?;
 
         self.sql_parser.skip_white_spaces();
 
@@ -122,7 +136,7 @@ impl<'a> SelectStmtParser<'a> {
             let field = self.sql_parser.read_token()?;
 
             if fields.contains(&field) {
-                return Err(format!("Column `{field}` has already be selected."))
+                return Err(format!("Column `{field}` has already be selected."));
             }
 
             check_key_word(&field)?;
@@ -141,14 +155,6 @@ impl<'a> SelectStmtParser<'a> {
 
         Ok(fields)
     }
-
-    fn parse_table_name(&mut self) -> Result<String, String> {
-        let string = self.sql_parser.read_token()?;
-        if string.is_empty() {
-            return Err(String::from("Syntax error, table is not specified."));
-        }
-        Ok(string)
-    }
 }
 
 struct WhereStmtParser<'a> {
@@ -158,7 +164,7 @@ struct WhereStmtParser<'a> {
 impl<'a> WhereStmtParser<'a> {
     fn parse(&mut self) -> Result<WhereStmt, String> {
         if !self.sql_parser.starts_with(WHERE) {
-            return Err(format!("Syntax error, expected a Where statement, but a token `{}` was found.", self.sql_parser.read_token()?))
+            return Err(format!("Syntax error, expected a Where statement, but a token `{}` was found.", self.sql_parser.read_token()?));
         }
         self.sql_parser.position += WHERE.len();
         self.sql_parser.skip_white_spaces();
@@ -172,18 +178,18 @@ impl<'a> WhereStmtParser<'a> {
             logical_op = None;
 
             if self.sql_parser.is_end() || self.sql_parser.starts_with(ORDER_BY) {
-                break
+                break;
             }
 
             logical_op = Some(LogicalOperator::try_from(self.sql_parser.read_token()?.as_str())?);
         }
 
         if logical_op.is_some() {
-            return Err(String::from("Syntax error, Where statement is not complete."))
+            return Err(String::from("Syntax error, Where statement is not complete."));
         }
 
         if condition_exprs.is_empty() {
-            return Err(String::from("Syntax error, empty Where statement detected."))
+            return Err(String::from("Syntax error, empty Where statement detected."));
         }
 
         Ok(WhereStmt::new(condition_exprs))
@@ -202,12 +208,12 @@ impl<'a> WhereStmtParser<'a> {
                 }
                 conditions.push(self.parse_condition(logical_op)?);
                 if self.sql_parser.current_char() == ')' {
-                    break
+                    break;
                 }
                 more_than_one = true;
             }
             if self.sql_parser.current_char() != ')' {
-                return Err(format!("Syntax error, Where statement is incorrectly formatted, expected a ')' but found {}", self.sql_parser.current_char()))
+                return Err(format!("Syntax error, Where statement is incorrectly formatted, expected a ')' but found {}", self.sql_parser.current_char()));
             }
             self.sql_parser.advance(); //skip ')'
         } else {
@@ -231,6 +237,88 @@ impl<'a> WhereStmtParser<'a> {
         let v = ValueParser { sql_parser: self.sql_parser }.parse()?;
         self.sql_parser.skip_white_spaces();
         Ok(Condition::new(logical_operator, field, op, v))
+    }
+}
+
+struct InsertStmtParser<'a> {
+    sql_parser: &'a mut SqlParser,
+}
+
+impl<'a> InsertStmtParser<'a> {
+    fn parse(&mut self) -> Result<InsertStmt, String> {
+        self.sql_parser.position += INSERT.len();
+        self.sql_parser.skip_white_spaces();
+
+        let table_name = self.sql_parser.parse_table_name()?;
+
+        self.sql_parser.skip_white_spaces();
+
+        let fields = self.parse_inserted_fields()?;
+
+        let values = self.parse_values()?;
+
+        if fields.first().unwrap() != "*" && values.len() != fields.len() {
+            return Err(String::from("Number of inserted rows and row values are not the same."))
+        }
+
+        Ok(InsertStmt::new(table_name, fields, values))
+    }
+
+    fn parse_inserted_fields(&mut self) -> Result<Vec<String>, String> {
+        self.sql_parser.skip_white_spaces();
+        let mut fields = Vec::<String>::new();
+        if self.sql_parser.current_char() == '(' {
+            self.sql_parser.advance(); // skip '('
+            while !self.sql_parser.is_end() {
+                let field = self.sql_parser.read_token()?;
+                check_valid_field_name(&field)?;
+                check_key_word(&field)?;
+                fields.push(field);
+                self.sql_parser.skip_white_spaces();
+                if !self.sql_parser.is_end() && self.sql_parser.current_char() == ',' {
+                    self.sql_parser.advance();
+                } else if !self.sql_parser.is_end() && self.sql_parser.current_char() == ')' {
+                    break;
+                }
+                self.sql_parser.skip_white_spaces();
+            }
+
+            if self.sql_parser.is_end() || self.sql_parser.current_char() != ')' {
+                return Err(String::from("Syntax error, inserted fields is not closed, expected a ')'"));
+            }
+            self.sql_parser.advance();
+        } else {
+            fields.push(String::from("*"))
+        }
+
+        Ok(fields)
+    }
+    fn parse_values(&mut self) -> Result<Vec<Value>, String> {
+        self.sql_parser.skip_white_spaces();
+        if !self.sql_parser.starts_with(VALUES) {
+            return Err(String::from("Syntax error, `values` is missing."));
+        }
+        self.sql_parser.position += VALUES.len();
+        self.sql_parser.skip_white_spaces();
+        if !self.sql_parser.is_end() && self.sql_parser.current_char() == '(' {
+            self.sql_parser.advance(); // skip '('
+            let mut values = Vec::<Value>::new();
+            while !self.sql_parser.is_end() {
+                let value = ValueParser { sql_parser: self.sql_parser }.parse()?;
+                values.push(value);
+
+                self.sql_parser.skip_white_spaces();
+                if !self.sql_parser.is_end() && self.sql_parser.current_char() == ',' {
+                    self.sql_parser.advance();
+                } else if !self.sql_parser.is_end() && self.sql_parser.current_char() == ')' {
+                    break;
+                }
+            }
+
+            return Ok(values)
+        } else {
+            return Err(String::from("Syntax error, '(' is expected after `values`."));
+        }
     }
 }
 
@@ -389,7 +477,7 @@ fn check_key_word(k: &String) -> Result<(), String> {
 }
 
 fn check_valid_field_name(k: &String) -> Result<(), String> {
-    if k.chars().next().unwrap().is_numeric(){
+    if k.chars().next().unwrap().is_numeric() {
         return Err(format!("Field name `{}` is invalid", k));
     }
     for c in k.chars() {

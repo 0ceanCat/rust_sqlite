@@ -19,6 +19,14 @@ impl SqlStmt for WhereStmt {
     }
 }
 
+impl SqlStmt for InsertStmt{
+    fn print_stmt(&self) {
+        println!("table name: {}", self.table);
+        println!("fields: {:?}", self.fields);
+        println!("values: {:?}", self.values);
+    }
+}
+
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct SelectStmt {
     pub(crate) selected_fields: Vec<String>,
@@ -36,10 +44,22 @@ impl SelectStmt {
     }
 }
 
-struct InsertStmt {
+
+#[derive(PartialEq, PartialOrd, Debug)]
+pub(crate) struct InsertStmt {
     table: String,
     fields: Vec<String>,
-    values: Vec<String>,
+    values: Vec<Value>,
+}
+
+impl InsertStmt {
+    pub fn new(table: String, fields: Vec<String>, values: Vec<Value>) -> InsertStmt{
+        InsertStmt {
+            table,
+            fields,
+            values
+        }
+    }
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
