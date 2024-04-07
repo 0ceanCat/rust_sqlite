@@ -389,14 +389,11 @@ fn check_key_word(k: &String) -> Result<(), String> {
 }
 
 fn check_valid_field_name(k: &String) -> Result<(), String> {
-    if let Ok(_) = k.parse::<i32>() {
-        return Err(format!("Field name `{}` is invalid", k));
-    }
-    if let Ok(_) = k.parse::<f32>() {
+    if k.chars().next().unwrap().is_numeric(){
         return Err(format!("Field name `{}` is invalid", k));
     }
     for c in k.chars() {
-        if !c.is_ascii_alphabetic() && c != '_' {
+        if !c.is_numeric() && (c < 'a' || c > 'z') && c != '_' {
             return Err(format!("Field name `{}` is invalid", k));
         }
     }
