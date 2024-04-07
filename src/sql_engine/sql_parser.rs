@@ -27,7 +27,7 @@ impl SqlParser {
             let mut select_stmt_parser = SelectStmtParser { sql_parser: self };
             let select_stmt = select_stmt_parser.parse()?;
             Ok(Box::new(select_stmt))
-        } else if self.starts_with(INSERT) {
+        } else if self.starts_with(INSERT_INTO) {
             let mut insert_stmt_parser = InsertStmtParser { sql_parser: self };
             let insert_stmt = insert_stmt_parser.parse()?;
             Ok(Box::new(insert_stmt))
@@ -246,7 +246,7 @@ struct InsertStmtParser<'a> {
 
 impl<'a> InsertStmtParser<'a> {
     fn parse(&mut self) -> Result<InsertStmt, String> {
-        self.sql_parser.position += INSERT.len();
+        self.sql_parser.position += INSERT_INTO.len();
         self.sql_parser.skip_white_spaces();
 
         let table_name = self.sql_parser.parse_table_name()?;
@@ -314,7 +314,10 @@ impl<'a> InsertStmtParser<'a> {
                     break;
                 }
             }
-
+            if self.sql_parser.is_end() || self.sql_parser.current_char() != ')' {
+                return Err(String::from("Syntax error, `values` is not closed, expected a ')'"));
+            }
+            self.sql_parser.advance();
             return Ok(values)
         } else {
             return Err(String::from("Syntax error, '(' is expected after `values`."));
