@@ -1,4 +1,4 @@
-use crate::sql_engine::sql_structs::{SqlStmt, SelectStmt, WhereStmt, InsertStmt, ConditionExpr, Condition, Operator, LogicalOperator, Value};
+use crate::sql_engine::sql_structs::{SqlStmt, SelectStmt, WhereStmt, InsertStmt, ConditionExpr, Condition, Operator, LogicalOperator, Value, OrderByStmt, OrderByExpr, Order};
 use crate::sql_engine::keywords::*;
 
 static BLANK_SYMBOLS: [char; 4] = [' ', '\t', '\n', '\r'];
@@ -124,7 +124,13 @@ impl<'a> SelectStmtParser<'a> {
             Some(WhereStmtParser { sql_parser: self.sql_parser }.parse()?)
         };
 
-        Ok(SelectStmt::new(selected_fields, table, where_stmt))
+        let order_by_stmt: Option<OrderByStmt> = if self.sql_parser.is_end() {
+            None
+        } else {
+            Some(OrderByStmtParser { sql_parser: self.sql_parser }.parse()?)
+        };
+
+        Ok(SelectStmt::new(selected_fields, table, where_stmt, order_by_stmt))
     }
 
     fn parse_selected_fields(&mut self) -> Result<Vec<String>, String> {
@@ -295,7 +301,7 @@ impl<'a> InsertStmtParser<'a> {
     }
     fn parse_values(&mut self) -> Result<Vec<Value>, String> {
         self.sql_parser.skip_white_spaces();
-        if !self.sql_parser.starts_with(VALUES) {
+        if self.sql_parser.is_end() || !self.sql_parser.starts_with(VALUES) {
             return Err(String::from("Syntax error, `values` is missing."));
         }
         self.sql_parser.position += VALUES.len();
@@ -320,8 +326,45 @@ impl<'a> InsertStmtParser<'a> {
             self.sql_parser.advance();
             return Ok(values)
         } else {
-            return Err(String::from("Syntax error, '(' is expected after `values`."));
+            return Err(String::from("Syntax error, `values` is uncompleted."));
         }
+    }
+}
+
+struct OrderByStmtParser<'a> {
+    sql_parser: &'a mut SqlParser
+}
+
+impl<'a> OrderByStmtParser<'a> {
+    pub(crate) fn parse(&mut self) -> Result<OrderByStmt, String> {
+        self.sql_parser.skip_white_spaces();
+
+        if !self.sql_parser.starts_with(ORDER_BY) {
+            return Err(format!("Syntax error, expect `order by`, but found {}", self.sql_parser.read_token()?))
+        }
+
+        self.sql_parser.position += ORDER_BY.len();
+
+        self.sql_parser.skip_white_spaces();
+
+        let mut order_bys = Vec::<OrderByExpr>::new();
+
+        while !self.sql_parser.is_end() {
+            let field = self.sql_parser.read_token()?;
+            check_valid_field_name(&field)?;
+            check_key_word(&field)?;
+            self.sql_parser.skip_white_spaces();
+            let mut order: Order;
+            if self.sql_parser.is_end() || self.sql_parser.current_char() == ','{
+                order = Order::ASC;
+            } else {
+                order = Order::try_from(self.sql_parser.read_token()?.as_str())?;
+            }
+            self.sql_parser.advance();
+            order_bys.push(OrderByExpr::new(field, order));
+        }
+
+        Ok(OrderByStmt{order_by_exprs: order_bys})
     }
 }
 

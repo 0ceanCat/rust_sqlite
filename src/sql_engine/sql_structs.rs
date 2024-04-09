@@ -10,6 +10,7 @@ impl SqlStmt for SelectStmt {
         println!("selected fields: {:?}", self.selected_fields);
         println!("table name: {:?}", self.table);
         println!("where stmt: {:?}", self.where_stmt);
+        println!("order by stmt: {:?}", self.order_by_stmt);
     }
 }
 
@@ -19,7 +20,7 @@ impl SqlStmt for WhereStmt {
     }
 }
 
-impl SqlStmt for InsertStmt{
+impl SqlStmt for InsertStmt {
     fn print_stmt(&self) {
         println!("table name: {}", self.table);
         println!("fields: {:?}", self.fields);
@@ -32,14 +33,16 @@ pub(crate) struct SelectStmt {
     pub(crate) selected_fields: Vec<String>,
     pub(crate) table: String,
     pub(crate) where_stmt: Option<WhereStmt>,
+    pub(crate) order_by_stmt: Option<OrderByStmt>,
 }
 
 impl SelectStmt {
-    pub(crate) fn new(selected_fields: Vec<String>, table: String, where_stmt: Option<WhereStmt>) -> SelectStmt {
+    pub(crate) fn new(selected_fields: Vec<String>, table: String, where_stmt: Option<WhereStmt>, order_by_stmt: Option<OrderByStmt>) -> SelectStmt {
         SelectStmt {
             selected_fields,
             table,
             where_stmt,
+            order_by_stmt,
         }
     }
 }
@@ -53,24 +56,52 @@ pub(crate) struct InsertStmt {
 }
 
 impl InsertStmt {
-    pub fn new(table: String, fields: Vec<String>, values: Vec<Value>) -> InsertStmt{
+    pub fn new(table: String, fields: Vec<String>, values: Vec<Value>) -> InsertStmt {
         InsertStmt {
             table,
             fields,
-            values
+            values,
         }
     }
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct WhereStmt {
-    condition_exprs: Vec<ConditionExpr>
+    condition_exprs: Vec<ConditionExpr>,
 }
 
 impl WhereStmt {
     pub(crate) fn new(condition_exprs: Vec<ConditionExpr>) -> WhereStmt {
         WhereStmt {
             condition_exprs
+        }
+    }
+}
+
+#[derive(PartialEq, PartialOrd, Debug)]
+pub(crate) struct OrderByStmt {
+    pub(crate) order_by_exprs: Vec<OrderByExpr>,
+}
+
+impl OrderByStmt {
+    pub fn new(order_by_exprs: Vec<OrderByExpr>) -> OrderByStmt {
+        OrderByStmt {
+            order_by_exprs
+        }
+    }
+}
+
+#[derive(PartialEq, PartialOrd, Debug)]
+pub(crate) struct OrderByExpr {
+    field: String,
+    order: Order,
+}
+
+impl OrderByExpr {
+    pub fn new(field: String, order: Order) -> OrderByExpr {
+        OrderByExpr {
+            field,
+            order,
         }
     }
 }
@@ -97,12 +128,32 @@ pub(crate) struct Condition {
 }
 
 impl Condition {
-    pub(crate) fn new(logical_operator: LogicalOperator,field: String, operator: Operator, value: Value) -> Condition {
+    pub(crate) fn new(logical_operator: LogicalOperator, field: String, operator: Operator, value: Value) -> Condition {
         Condition {
             logical_operator,
             field,
             operator,
             value,
+        }
+    }
+}
+
+#[derive(PartialEq, PartialOrd, Debug)]
+pub(crate) enum Order {
+    ASC,
+    DESC,
+}
+
+impl TryFrom<&str> for Order {
+    type Error = &'static str;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "asc" => {
+                Ok(Order::ASC)
+            }
+            "desc" => { Ok(Order::DESC) }
+            _ => { Err("Unknown Order.") }
         }
     }
 }
@@ -134,7 +185,7 @@ impl TryFrom<&str> for LogicalOperator {
             "and" => {
                 Ok(AND)
             }
-            _ => { Err("Unknown logical operator") }
+            _ => { Err("Unknown logical operator.") }
         }
     }
 }
