@@ -1,26 +1,35 @@
+use std::cmp::{Ordering, PartialEq, PartialOrd};
+use std::collections::HashSet;
+use std::fs::{File, OpenOptions};
 use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
+use crate::storage_engine::core::{Pager, Row, Table};
 
-pub(crate) trait SqlStmt {
+pub(crate) trait Printable {
     fn print_stmt(&self) {}
 }
 
-impl SqlStmt for SelectStmt {
+pub(crate) enum SqlStmt {
+    SELECT(SelectStmt),
+    INSERT(InsertStmt),
+}
+
+impl Printable for SelectStmt {
     fn print_stmt(&self) {
         println!("selected fields: {:?}", self.selected_fields);
         println!("table name: {:?}", self.table);
-        println!("where stmt: {:?}", self.where_stmt);
-        println!("order by stmt: {:?}", self.order_by_stmt);
+        println!("where stmt: {:?}", self.where_expr);
+        println!("order by stmt: {:?}", self.order_by_expr);
     }
 }
 
-impl SqlStmt for WhereStmt {
+impl Printable for WhereExpr {
     fn print_stmt(&self) {
         println!("{:?}", self.condition_exprs)
     }
 }
 
-impl SqlStmt for InsertStmt {
+impl Printable for InsertStmt {
     fn print_stmt(&self) {
         println!("table name: {}", self.table);
         println!("fields: {:?}", self.fields);
@@ -28,22 +37,49 @@ impl SqlStmt for InsertStmt {
     }
 }
 
-#[derive(PartialEq, PartialOrd, Debug)]
+#[derive(PartialEq, Debug, PartialOrd)]
 pub(crate) struct SelectStmt {
     pub(crate) selected_fields: Vec<String>,
     pub(crate) table: String,
-    pub(crate) where_stmt: Option<WhereStmt>,
-    pub(crate) order_by_stmt: Option<OrderByStmt>,
+    pub(crate) where_expr: Option<WhereExpr>,
+    pub(crate) order_by_expr: Option<OrderByCluster>,
 }
 
 impl SelectStmt {
-    pub(crate) fn new(selected_fields: Vec<String>, table: String, where_stmt: Option<WhereStmt>, order_by_stmt: Option<OrderByStmt>) -> SelectStmt {
+    pub(crate) fn new(selected_fields: Vec<String>, table: String, where_stmt: Option<WhereExpr>, order_by_stmt: Option<OrderByCluster>) -> SelectStmt {
         SelectStmt {
             selected_fields,
             table,
-            where_stmt,
-            order_by_stmt,
+            where_expr: where_stmt,
+            order_by_expr: order_by_stmt,
         }
+    }
+
+    fn table_file(&self) -> Result<File, String> {
+        match OpenOptions::new().read(true).open(&self.table) {
+            Ok(file) => {
+                Ok(file)
+            }
+            Err(_) => {
+                Err(format!("Table {} does not exist.", self.table))
+            }
+        }
+    }
+
+    pub(crate) fn execute(&self) -> Result<Vec<Row>, String> {
+        let file = self.table_file()?;
+        let pager = Pager::open_from(file);
+        let mut table = Table::new(pager);
+        let mut result = Vec::<Row>::new();
+        if self.where_expr.is_some() {
+            let where_expr = self.where_expr.as_ref().unwrap();
+            let set = where_expr.execute(&mut table)?;
+            result = set.into_iter().collect();
+        }
+        if self.order_by_expr.is_some() {
+            todo!()
+        }
+        Ok(result)
     }
 }
 
@@ -63,29 +99,63 @@ impl InsertStmt {
             values,
         }
     }
-}
 
-#[derive(PartialEq, PartialOrd, Debug)]
-pub(crate) struct WhereStmt {
-    condition_exprs: Vec<ConditionExpr>,
-}
-
-impl WhereStmt {
-    pub(crate) fn new(condition_exprs: Vec<ConditionExpr>) -> WhereStmt {
-        WhereStmt {
-            condition_exprs
-        }
+    pub fn execute(&self) -> Result<usize, String> {
+        todo!()
     }
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
-pub(crate) struct OrderByStmt {
+pub(crate) struct WhereExpr {
+    condition_exprs: Vec<(LogicalOperator, ConditionCluster)>,
+}
+
+impl WhereExpr {
+    pub(crate) fn new(condition_exprs: Vec<(LogicalOperator, ConditionCluster)>) -> WhereExpr {
+        WhereExpr {
+            condition_exprs
+        }
+    }
+
+    fn execute(&self, table: &mut Table) -> Result<HashSet<Row>, String> {
+        let mut outer_set = HashSet::<Row>::new();
+        for (op, cluster) in &self.condition_exprs {
+            let set = Self::find_rows(cluster, table)?;
+            match op {
+                OR => outer_set.extend(set),
+                AND => outer_set.retain(|r| set.contains(r))
+            }
+        }
+        Ok(outer_set)
+    }
+
+    fn find_rows(condition_cluster: &ConditionCluster, table: &mut Table) -> Result<HashSet<Row>, String> {
+        let mut set: HashSet<Row> = HashSet::<Row>::new();
+        for condition in &condition_cluster.conditions {
+            let result = table.table_find_by_value(&condition.field, &condition.operator, &condition.value)?;
+            match condition.logical_operator {
+                OR => {
+                    result.into_iter().for_each(|r| {
+                        set.insert(r);
+                    });
+                }
+                AND => {
+                    set.retain(|e| result.contains(e));
+                }
+            };
+        }
+        Ok(set)
+    }
+}
+
+#[derive(PartialEq, PartialOrd, Debug)]
+pub(crate) struct OrderByCluster {
     pub(crate) order_by_exprs: Vec<OrderByExpr>,
 }
 
-impl OrderByStmt {
-    pub fn new(order_by_exprs: Vec<OrderByExpr>) -> OrderByStmt {
-        OrderByStmt {
+impl OrderByCluster {
+    pub fn new(order_by_exprs: Vec<OrderByExpr>) -> OrderByCluster {
+        OrderByCluster {
             order_by_exprs
         }
     }
@@ -106,30 +176,30 @@ impl OrderByExpr {
     }
 }
 
-#[derive(PartialEq, PartialOrd, Debug)]
-pub(crate) struct ConditionExpr {
-    conditions: Vec<Condition>,
+#[derive(PartialEq, Debug, PartialOrd)]
+pub(crate) struct ConditionCluster {
+    conditions: Vec<ConditionExpr>,
 }
 
-impl ConditionExpr {
-    pub(crate) fn new(conditions: Vec<Condition>) -> ConditionExpr {
-        ConditionExpr {
+impl ConditionCluster {
+    pub(crate) fn new(conditions: Vec<ConditionExpr>) -> ConditionCluster {
+        ConditionCluster {
             conditions,
         }
     }
 }
 
-#[derive(PartialEq, PartialOrd, Debug)]
-pub(crate) struct Condition {
+#[derive(PartialEq, Debug, PartialOrd)]
+pub(crate) struct ConditionExpr {
     pub logical_operator: LogicalOperator,
     pub field: String,
     pub operator: Operator,
     pub value: Value,
 }
 
-impl Condition {
-    pub(crate) fn new(logical_operator: LogicalOperator, field: String, operator: Operator, value: Value) -> Condition {
-        Condition {
+impl ConditionExpr {
+    pub(crate) fn new(logical_operator: LogicalOperator, field: String, operator: Operator, value: Value) -> ConditionExpr {
+        ConditionExpr {
             logical_operator,
             field,
             operator,
@@ -191,7 +261,7 @@ impl TryFrom<&str> for LogicalOperator {
 }
 
 impl Operator {
-    fn operate(&self, a: Value, b: Value) -> bool {
+    pub(crate) fn operate(&self, a: &Value, b: &Value) -> bool {
         match self {
             EQUALS(negative) => { (a == b) ^ negative }
             GT => { a > b }
@@ -247,7 +317,7 @@ impl TryFrom<String> for Operator {
     }
 }
 
-#[derive(PartialEq, PartialOrd, Debug)]
+#[derive(Debug)]
 pub(crate) enum Value {
     Integer(i32),
     Float(f32),
@@ -255,6 +325,34 @@ pub(crate) enum Value {
     String(String),
     Array(Vec<Value>),
     SelectStmt(SelectStmt),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            Value::Integer(i) => {*i == other.unwrap_into_int().unwrap()}
+            Value::Float(f) => { *f == other.unwrap_into_float().unwrap() }
+            Value::Boolean(b) => { *b == other.unwrap_into_bool().unwrap() }
+            Value::String(s) => {
+                s == other.unwrap_as_string().unwrap()
+            }
+            Value::Array(a) => { a == other.unwrap_as_array().unwrap() }
+            Value::SelectStmt(s) => { other.is_select_stmt() }
+        }
+    }
+}
+
+impl PartialOrd for Value{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self {
+            Value::Integer(i) => {i.partial_cmp(&other.unwrap_into_int().unwrap())}
+            Value::Float(f) => { f.partial_cmp(&other.unwrap_into_float().unwrap()) }
+            Value::Boolean(b) => { b.partial_cmp(&other.unwrap_into_bool().unwrap()) }
+            Value::String(s) => {s.partial_cmp(&other.unwrap_as_string().unwrap())}
+            Value::Array(a) => { None }
+            Value::SelectStmt(s) => { None }
+        }
+    }
 }
 
 impl Value {
@@ -284,42 +382,42 @@ impl Value {
         }
     }
 
-    fn unwrap_as_int(&self) -> Result<&i32, &str> {
+    pub fn unwrap_into_int(&self) -> Result<i32, &str> {
         match self {
-            Value::Integer(v) => Ok(v),
+            Value::Integer(v) => Ok(*v),
             _ => Err("Current Value is not an Integer.")
         }
     }
 
-    fn unwrap_as_float(&self) -> Result<&f32, &str> {
+    pub fn unwrap_into_float(&self) -> Result<f32, &str> {
         match self {
-            Value::Float(v) => Ok(v),
+            Value::Float(v) => Ok(*v),
             _ => Err("Current Value is not a Float.")
         }
     }
 
-    fn unwrap_as_string(&self) -> Result<&String, &str> {
+    pub fn unwrap_as_string(&self) -> Result<&String, &str> {
         match self {
             Value::String(v) => Ok(v),
             _ => Err("Current Value is not a String.")
         }
     }
 
-    fn unwrap_as_array(&self) -> Result<&Vec<Value>, &str> {
+    pub fn unwrap_as_array(&self) -> Result<&Vec<Value>, &str> {
         match self {
             Value::Array(v) => Ok(v),
             _ => Err("Current Value is not an Array.")
         }
     }
 
-    fn unwrap_as_bool(&self) -> Result<&bool, &str> {
+    pub fn unwrap_into_bool(&self) -> Result<bool, &str> {
         match self {
-            Value::Boolean(v) => Ok(v),
+            Value::Boolean(v) => Ok(*v),
             _ => Err("Current Value is not a Boolean.")
         }
     }
 
-    fn is_select_stmt(&self) -> bool {
+    pub fn is_select_stmt(&self) -> bool {
         match self {
             Value::SelectStmt(_) => true,
             _ => false

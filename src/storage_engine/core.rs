@@ -9,10 +9,11 @@ use std::process::{exit};
 use std::{ptr};
 use std::ptr::null_mut;
 use regex::Regex;
-use crate::common::{copy, indent};
-use crate::config::*;
-use crate::cursor::Cursor;
-use crate::enums::*;
+use crate::sql_engine::sql_structs::{Operator, Value};
+use crate::storage_engine::common::{copy, indent};
+use crate::storage_engine::config::*;
+use crate::storage_engine::cursor::Cursor;
+use crate::storage_engine::enums::*;
 
 macro_rules! to_u8_array {
     ($s:ident, $size: expr) => {
@@ -23,6 +24,11 @@ macro_rules! to_u8_array {
             array
         }
     };
+}
+
+fn u8_array_to_string(array: &[u8]) -> String {
+    let end = array.iter().position(|c|  *c == 0).unwrap_or(array.len());
+    String::from_utf8_lossy(&array[..end]).to_string()
 }
 
 pub struct Pager {
@@ -54,8 +60,24 @@ impl Pager {
                 }
             }
             Err(_) => {
-                panic!("Can not open db file!")
+                panic!("Can not open user file!")
             }
+        }
+    }
+
+    pub(crate) fn open_from(file: File) -> Pager {
+        let size = file.metadata().unwrap().len() as usize;
+        if size % PAGE_SIZE != 0 {
+            println!("Db file is not a whole number of pages. Corrupt file.");
+            exit(1);
+        }
+        let mut total_pages = size / PAGE_SIZE;
+        Pager {
+            pages: [None; TABLE_MAX_PAGES],
+            fd: file,
+            updated: [false; TABLE_MAX_PAGES],
+            size,
+            total_pages,
         }
     }
 
@@ -429,6 +451,7 @@ impl Pager {
 
 pub struct Table {
     pub root_page_index: usize,
+    pub key: String,
     pub pager: Pager,
 }
 
@@ -442,11 +465,38 @@ impl Table {
         }
         Table {
             root_page_index: 0,
+            key: String::from("id"),
             pager,
         }
     }
 
-    pub(crate) fn table_find(&mut self, key: usize) -> Cursor {
+    pub fn table_find_by_value(&mut self, field: &String, operator: &Operator, value: &Value) -> Result<Vec<Row>, String> {
+        let mut cursor = Cursor::table_start(self);
+        let mut rows_offset = Vec::<Row>::new();
+        while !cursor.is_end() {
+            let row = Row::deserialize_row(cursor.cursor_value());
+            let matched = match field.as_str() {
+                "id" => {operator.operate(&Value::Integer(row.id as i32), &value)}
+                "username" => {
+                    let result = u8_array_to_string(&row.username);
+                    operator.operate(&Value::String(result), &value)
+                }
+                "email" => {
+                    let result = u8_array_to_string(&row.email);
+                    operator.operate(&Value::String(result), &value)}
+                _ => {false}
+            };
+
+            if matched {
+                rows_offset.push(row);
+            }
+            cursor.cursor_advance();
+        }
+
+        Ok(rows_offset)
+    }
+
+    pub(crate) fn table_find_by_key(&mut self, key: usize) -> Cursor {
         let node_type = self.pager.get_node_type_by_index(self.root_page_index);
         match node_type {
             NodeType::Internal => {
@@ -778,11 +828,11 @@ impl Table {
 type Page = [u8; PAGE_SIZE];
 
 
-#[derive(Debug)]
+#[derive(Debug, Hash, Eq, PartialEq)]
 pub struct Row {
-    id: usize,
-    username: [u8; COLUMN_USERNAME_SIZE],
-    email: [u8; COLUMN_EMAIL_SIZE],
+    pub id: usize,
+    pub username: [u8; COLUMN_USERNAME_SIZE],
+    pub email: [u8; COLUMN_EMAIL_SIZE],
 }
 
 impl Row {
@@ -817,7 +867,7 @@ impl Row {
         }
     }
 
-    fn deserialize_row(source: *const u8) -> Row {
+    pub(crate) fn deserialize_row(source: *const u8) -> Row {
         let mut destination = Row {
             id: 0,
             username: [0u8; COLUMN_USERNAME_SIZE],
@@ -864,7 +914,7 @@ impl Statement {
 
 pub fn new_input_buffer() -> &'static str {
     let mut input = String::new();
-    print!("db>");
+    print!("user>");
     std::io::stdout().flush().expect("flush failed!");
     std::io::stdin().read_line(&mut input).unwrap();
     input.leak().trim()
@@ -907,10 +957,8 @@ pub fn prepare_statement(input: &str) -> Result<Statement, &'static str> {
 pub fn execute_statement(statement: &Statement, table: &mut Table) -> ExecutionResult {
     match statement.type_ {
         StatementType::StatementInsert => {
-            execute_insert(statement, table)
-        }
-        StatementType::StatementSelect => {
-            execute_select(Cursor::table_start(table))
+            execute_insert(statement, table);
+            ExecutionResult::ExecutionSuccess
         }
         StatementType::StatementFlush => {
             table.flush_to_disk();
@@ -918,6 +966,9 @@ pub fn execute_statement(statement: &Statement, table: &mut Table) -> ExecutionR
         }
         StatementType::StatementBTree => {
             table.print_tree(0, 0);
+            ExecutionResult::ExecutionSuccess
+        }
+        _ => {
             ExecutionResult::ExecutionSuccess
         }
     }
@@ -928,7 +979,7 @@ pub fn execute_insert(statement: &Statement, table: &mut Table) -> ExecutionResu
 
     let row = row_to_insert.as_ref().unwrap();
 
-    let mut cursor = table.table_find(row.id);
+    let mut cursor = table.table_find_by_key(row.id);
     cursor.insert_row(row.id, row);
     ExecutionResult::ExecutionSuccess
 }

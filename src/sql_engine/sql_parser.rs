@@ -1,4 +1,4 @@
-use crate::sql_engine::sql_structs::{SqlStmt, SelectStmt, WhereStmt, InsertStmt, ConditionExpr, Condition, Operator, LogicalOperator, Value, OrderByStmt, OrderByExpr, Order};
+use crate::sql_engine::sql_structs::{Printable, SelectStmt, WhereExpr, InsertStmt, ConditionCluster, ConditionExpr, Operator, LogicalOperator, Value, OrderByCluster, OrderByExpr, Order, SqlStmt};
 use crate::sql_engine::keywords::*;
 
 static BLANK_SYMBOLS: [char; 4] = [' ', '\t', '\n', '\r'];
@@ -12,7 +12,7 @@ pub struct SqlParser {
 }
 
 impl SqlParser {
-    pub fn parse_sql(input_stream: String) -> Result<Box<dyn SqlStmt>, String> {
+    pub fn parse_sql(input_stream: &str) -> Result<SqlStmt, String> {
         let vec = input_stream.chars().collect();
         SqlParser {
             position: 0,
@@ -20,17 +20,17 @@ impl SqlParser {
         }.parse()
     }
 
-    fn parse(&mut self) -> Result<Box<dyn SqlStmt>, String> {
+    fn parse(&mut self) -> Result<SqlStmt, String> {
         self.skip_white_spaces();
 
         if self.starts_with(SELECT) {
             let mut select_stmt_parser = SelectStmtParser { sql_parser: self };
             let select_stmt = select_stmt_parser.parse()?;
-            Ok(Box::new(select_stmt))
+            Ok(SqlStmt::SELECT(select_stmt))
         } else if self.starts_with(INSERT_INTO) {
             let mut insert_stmt_parser = InsertStmtParser { sql_parser: self };
             let insert_stmt = insert_stmt_parser.parse()?;
-            Ok(Box::new(insert_stmt))
+            Ok(SqlStmt::INSERT(insert_stmt))
         } else {
             Err(String::from("Unknown sql statement."))
         }
@@ -118,13 +118,13 @@ impl<'a> SelectStmtParser<'a> {
 
         self.sql_parser.skip_white_spaces();
 
-        let where_stmt: Option<WhereStmt> = if self.sql_parser.is_end() {
+        let where_stmt: Option<WhereExpr> = if self.sql_parser.is_end() {
             None
         } else {
             Some(WhereStmtParser { sql_parser: self.sql_parser }.parse()?)
         };
 
-        let order_by_stmt: Option<OrderByStmt> = if self.sql_parser.is_end() {
+        let order_by_stmt: Option<OrderByCluster> = if self.sql_parser.is_end() {
             None
         } else {
             Some(OrderByStmtParser { sql_parser: self.sql_parser }.parse()?)
@@ -145,8 +145,10 @@ impl<'a> SelectStmtParser<'a> {
                 return Err(format!("Column `{field}` has already be selected."));
             }
 
-            check_key_word(&field)?;
-            check_valid_field_name(&field)?;
+            if field != "*" {
+                check_key_word(&field)?;
+                check_valid_field_name(&field)?;
+            }
             fields.push(field);
 
             self.sql_parser.skip_white_spaces();
@@ -168,19 +170,19 @@ struct WhereStmtParser<'a> {
 }
 
 impl<'a> WhereStmtParser<'a> {
-    fn parse(&mut self) -> Result<WhereStmt, String> {
+    fn parse(&mut self) -> Result<WhereExpr, String> {
         if !self.sql_parser.starts_with(WHERE) {
             return Err(format!("Syntax error, expected a Where statement, but a token `{}` was found.", self.sql_parser.read_token()?));
         }
         self.sql_parser.position += WHERE.len();
         self.sql_parser.skip_white_spaces();
 
-        let mut condition_exprs = Vec::<ConditionExpr>::new();
-        let mut logical_op = Some(LogicalOperator::AND);
+        let mut condition_exprs = Vec::<(LogicalOperator, ConditionCluster)>::new();
+        let mut logical_op = Some(LogicalOperator::OR);
 
         while !self.sql_parser.is_end() {
-            let condition_expr = self.parse_condition_expr(logical_op.unwrap())?;
-            condition_exprs.push(condition_expr);
+            let condition_expr = self.parse_condition_cluster()?;
+            condition_exprs.push((logical_op.unwrap(), condition_expr));
             logical_op = None;
 
             if self.sql_parser.is_end() || self.sql_parser.starts_with(ORDER_BY) {
@@ -198,14 +200,14 @@ impl<'a> WhereStmtParser<'a> {
             return Err(String::from("Syntax error, empty Where statement detected."));
         }
 
-        Ok(WhereStmt::new(condition_exprs))
+        Ok(WhereExpr::new(condition_exprs))
     }
 
-    fn parse_condition_expr(&mut self, logical_op: LogicalOperator) -> Result<ConditionExpr, String> {
+    fn parse_condition_cluster(&mut self) -> Result<ConditionCluster, String> {
         self.sql_parser.skip_white_spaces();
-        let mut conditions = Vec::<Condition>::new();
+        let mut conditions = Vec::<ConditionExpr>::new();
         let mut more_than_one = false;
-        let mut logical_op = logical_op;
+        let mut logical_op = LogicalOperator::OR;
         if self.sql_parser.current_char() == '(' {
             self.sql_parser.advance(); //skip '('
             while !self.sql_parser.is_end() {
@@ -226,10 +228,10 @@ impl<'a> WhereStmtParser<'a> {
             conditions.push(self.parse_condition(logical_op)?);
         }
         self.sql_parser.skip_white_spaces();
-        Ok(ConditionExpr::new(conditions))
+        Ok(ConditionCluster::new(conditions))
     }
 
-    fn parse_condition(&mut self, logical_operator: LogicalOperator) -> Result<Condition, String> {
+    fn parse_condition(&mut self, logical_operator: LogicalOperator) -> Result<ConditionExpr, String> {
         self.sql_parser.skip_white_spaces();
         let field = self.sql_parser.read_token()?;
         check_key_word(&field)?;
@@ -242,7 +244,7 @@ impl<'a> WhereStmtParser<'a> {
         self.sql_parser.skip_white_spaces();
         let v = ValueParser { sql_parser: self.sql_parser }.parse()?;
         self.sql_parser.skip_white_spaces();
-        Ok(Condition::new(logical_operator, field, op, v))
+        Ok(ConditionExpr::new(logical_operator, field, op, v))
     }
 }
 
@@ -336,7 +338,7 @@ struct OrderByStmtParser<'a> {
 }
 
 impl<'a> OrderByStmtParser<'a> {
-    pub(crate) fn parse(&mut self) -> Result<OrderByStmt, String> {
+    pub(crate) fn parse(&mut self) -> Result<OrderByCluster, String> {
         self.sql_parser.skip_white_spaces();
 
         if !self.sql_parser.starts_with(ORDER_BY) {
@@ -364,7 +366,7 @@ impl<'a> OrderByStmtParser<'a> {
             order_bys.push(OrderByExpr::new(field, order));
         }
 
-        Ok(OrderByStmt{order_by_exprs: order_bys})
+        Ok(OrderByCluster {order_by_exprs: order_bys})
     }
 }
 
@@ -502,11 +504,15 @@ impl<'a> OperatorParser<'a> {
             self.sql_parser.skip_white_spaces();
         }
 
-        while !self.sql_parser.is_end() && OPERATORS_SYMBOLS.contains(&self.sql_parser.current_char()) {
-            operator.push(self.sql_parser.current_char());
-            self.sql_parser.advance();
+        if !self.sql_parser.is_end() && self.sql_parser.starts_with("in ") {
+            operator.push_str("in");
+            self.sql_parser.position += "in".len();
+        }else {
+            while !self.sql_parser.is_end() && OPERATORS_SYMBOLS.contains(&self.sql_parser.current_char()) {
+                operator.push(self.sql_parser.current_char());
+                self.sql_parser.advance();
+            }
         }
-
         Operator::try_from(operator)
     }
 }

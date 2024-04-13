@@ -1,19 +1,16 @@
-mod core;
-mod config;
-mod cursor;
-mod enums;
-mod common;
+mod storage_engine;
 mod sql_engine;
 
-use std::io::Write;
+
+use std::io::{Read, Write};
 use std::process::exit;
-use core::*;
-use enums::*;
 use crate::sql_engine::sql_parser::SqlParser;
-use crate::sql_engine::sql_structs::SelectStmt;
+use crate::sql_engine::sql_structs::SqlStmt;
+use crate::storage_engine::core::*;
+use crate::storage_engine::enums::*;
 
 fn main() -> Result<(), String> {
-    /*let file_name = "./db";
+    let file_name = "./user";
     let pager = Pager::open(file_name);
     let mut table = Table::new(pager);
     loop {
@@ -31,7 +28,6 @@ fn main() -> Result<(), String> {
                 }
             }
         }
-
         match prepare_statement(&input) {
             Ok(statement) => {
                 match execute_statement(&statement, &mut table) {
@@ -47,12 +43,19 @@ fn main() -> Result<(), String> {
                 println!("{}", error)
             }
         }
-    }*/
-    let mut input = String::new();
-    print!("sql>");
-    std::io::stdout().flush().expect("flush failed!");
-    std::io::stdin().read_line(&mut input).unwrap();
-    let result = SqlParser::parse_sql(input)?;
-    println!("{:?}", result.print_stmt());
+
+        let sql = SqlParser::parse_sql(input)?;
+        match sql {
+            SqlStmt::SELECT(select) => {
+                let result = select.execute()?;
+                for row in result {
+                    println!("[id:{}, username:{}, email:{}]", row.id, String::from_utf8_lossy(row.username.as_slice()), String::from_utf8_lossy(row.email.as_slice()));
+                }
+            }
+            SqlStmt::INSERT(insert) => {
+                println!("{:?}", insert.execute()?);
+            }
+        }
+    }
     Ok(())
 }

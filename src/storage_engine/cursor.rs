@@ -1,6 +1,6 @@
-use crate::config::{LEAF_NODE_CELL_SIZE, LEAF_NODE_LEFT_SPLIT_COUNT, LEAF_NODE_MAX_CELLS, LEAF_NODE_RIGHT_SPLIT_COUNT};
-use crate::core::{Pager, Row, Table};
-use crate::common::{copy};
+use crate::storage_engine::common::copy;
+use crate::storage_engine::config::{LEAF_NODE_CELL_SIZE, LEAF_NODE_LEFT_SPLIT_COUNT, LEAF_NODE_MAX_CELLS, LEAF_NODE_RIGHT_SPLIT_COUNT};
+use crate::storage_engine::core::{Pager, Row, Table};
 
 pub struct Cursor<'a> {
     table: &'a mut Table,
@@ -23,7 +23,7 @@ impl<'a> Cursor<'a> {
 
     pub(crate) fn table_start(table: &mut Table) -> Cursor {
         //  if key 0 does not exist in the table, this method will return the position of the lowest id (the start of the left-most leaf node)
-        table.table_find(0)
+        table.table_find_by_key(0)
     }
 
     pub(crate) fn table_end(table: &mut Table) -> Cursor {
