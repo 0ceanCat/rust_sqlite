@@ -1,5 +1,6 @@
 mod storage_engine;
 mod sql_engine;
+mod utils;
 
 
 use std::io::{Read, Write};
@@ -8,7 +9,7 @@ use crate::sql_engine::sql_structs::SqlStmt;
 use crate::storage_engine::core::*;
 
 fn main() -> Result<(), String> {
-    let mut table_manager = TableManager::new();
+    /*let mut table_manager = TableManager::new();
     loop {
         let input = new_input_buffer();
 
@@ -33,6 +34,9 @@ fn main() -> Result<(), String> {
                 println!("{:?}", create);
             }
         }
-    }
+    }*/
+    let a = 0b0000_0110;
+    let b = (a >> 1) | 0;
+    println!("{}", b);
     Ok(())
 }

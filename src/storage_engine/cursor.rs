@@ -1,6 +1,6 @@
-use crate::storage_engine::common::copy;
 use crate::storage_engine::config::{LEAF_NODE_CELL_SIZE, LEAF_NODE_LEFT_SPLIT_COUNT, LEAF_NODE_MAX_CELLS, LEAF_NODE_RIGHT_SPLIT_COUNT};
 use crate::storage_engine::core::{Pager, Row, Table};
+use crate::utils::utils::copy;
 
 pub struct Cursor<'a> {
     table: &'a mut Table,

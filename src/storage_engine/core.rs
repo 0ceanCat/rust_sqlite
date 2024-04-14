@@ -8,42 +8,23 @@ use std::os::windows::fs::FileExt;
 use std::process::{exit};
 use std::{fs, ptr};
 use std::collections::HashMap;
-use std::mem::offset_of;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
-use regex::Regex;
+use crate::build_path;
 use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Operator, Value};
-use crate::storage_engine::common::{copy, indent};
+use crate::utils::utils::{copy, indent, u8_array_to_string};
 use crate::storage_engine::config::*;
 use crate::storage_engine::cursor::Cursor;
 use crate::storage_engine::enums::*;
 
-macro_rules! to_u8_array {
-    ($s:ident, $size: expr) => {
-        {
-           let mut array: [u8; $size] = [0; $size];
-            let bytes = $s.as_bytes();
-            array[..bytes.len()].copy_from_slice(bytes);
-            array
-        }
-    };
+trait ToU8 {
+    fn to_u8(&self) -> u8;
 }
 
-macro_rules! build_path {
-    ( $( $x:expr ),* ) => {
-        {
-           let mut path = PathBuf::new();
-           $(
-                path.push($x);
-            )*
-            path
-        }
-    };
-}
-
-fn u8_array_to_string(array: &[u8]) -> String {
-    let end = array.iter().position(|c| *c == 0).unwrap_or(array.len());
-    String::from_utf8_lossy(&array[..end]).to_string()
+impl ToU8 for bool {
+    fn to_u8(&self) -> u8 {
+        if *self { 1 } else { 0 }
+    }
 }
 
 pub struct TableManager {
@@ -69,27 +50,27 @@ impl TableManager {
         self.tables.get_mut(&path_str).unwrap()
     }
 
-    pub fn is_field_of_table(&mut self, table_name: &str, field_name: &str) -> bool{
-        self.get_metadata(table_name, field_name).is_some()
+    pub fn is_field_of_table(&mut self, table_name: &str, field_name: &str) -> bool {
+        self.get_metadata(table_name, field_name).is_ok()
     }
 
-    pub fn get_metadata(&mut self, table_name: &str, field_name: &str) -> Option<&FieldMetadata>{
-        match self.get_or_load_metadata(table_name) {
-            None => {None}
-            Some(map) => {
-                map.get(field_name)
-            }
+    pub fn get_metadata(&mut self, table_name: &str, field_name: &str) -> Result<&FieldMetadata, String> {
+        let map = self.get_or_load_metadata(table_name)?;
+
+        match map.get(field_name) {
+            None => { Err(format!("Field {} does not exist in table {}.", field_name, table_name))}
+            Some(meta) => { Ok(meta) }
         }
     }
 
-    fn get_or_load_metadata(&mut self, table_name: &str) -> Option<&HashMap<String, FieldMetadata>> {
+    fn get_or_load_metadata(&mut self, table_name: &str) -> Result<&HashMap<String, FieldMetadata>, String> {
         let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
         if !self.metadata.contains_key(table_name) {
-            let metadata = self.load_metadata(&path);
+            let metadata = unsafe { Self::load_metadata(&path)? };
             self.metadata.insert(String::from(table_name), metadata);
         }
 
-        self.metadata.get(table_name)
+        Ok(self.metadata.get(table_name).unwrap())
     }
 
     pub fn flash_to_disk(&mut self) {
@@ -107,57 +88,120 @@ impl TableManager {
         }
     }
 
-    fn load_metadata(&mut self, path: &Path) -> HashMap<String, FieldMetadata> {
+    pub fn create_table(&self, table_name: &str, field_definitions: &Vec<FieldDefinition>) -> Result<(), String> {
+        let frm_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
+
+        if Path::new(&frm_path).exists() {
+            return Err(format!("Table {} already exists.", table_name));
+        }
+
+        match File::create(frm_path) {
+            Ok(file) => {
+                Self::write_metadata(&file, table_name, field_definitions)
+            }
+            Err(_) => {
+                return Err(String::from("Can not open create table."));
+            }
+        }
+    }
+
+    fn write_metadata(fd: &File, table_name: &str, field_definitions: &Vec<FieldDefinition>) -> Result<(), String> {
+        let mut total_size = 0;
+        total_size += FIELD_NUMBER_SIZE;
+        total_size += field_definitions.len() * FIELD_NAME_SIZE;
+        total_size += field_definitions.len() * FIELD_TYPE_PRIMARY;
+
+        field_definitions.iter().for_each(|field_definition| {
+            match field_definition.data_type {
+                DataType::TEXT(size) => { total_size += size }
+                DataType::INTEGER => { total_size += INTEGER_SIZE }
+                DataType::FLOAT => { total_size += FLOAT_SIZE }
+                DataType::BOOLEAN => { total_size += BOOLEAN_SIZE }
+            }
+        });
+
+        let buf = Vec::<u8>::with_capacity(total_size).as_mut_ptr();
+        let mut buf_pointer = 0; // pointer that points to the position where we should start reading
+
+        copy(field_definitions.len() as *const u8, buf, FIELD_NUMBER_SIZE);
+        buf_pointer += FIELD_NUMBER_SIZE;
+
+        field_definitions.iter().for_each(|field_definition| unsafe {
+            copy(field_definition.field.as_ptr(), buf.add(buf_pointer), FIELD_NAME_SIZE);
+            buf_pointer += FIELD_NAME_SIZE;
+            let mut data_type_primary: u8 = (field_definition.data_type.to_bit_code() << 1) | field_definition.is_primary_key.to_u8();
+            copy(data_type_primary as *mut u8, buf.add(buf_pointer), FIELD_TYPE_PRIMARY);
+            buf_pointer += FIELD_TYPE_PRIMARY;
+            match field_definition.data_type {
+                DataType::TEXT(size) => {
+                    copy(size as *const usize as *mut u8, buf.add(buf_pointer), TEXT_SIZE);
+                    buf_pointer += TEXT_SIZE;
+                }
+                _ => {}
+            }
+        });
+        Ok(())
+    }
+
+    unsafe fn load_metadata(path: &Path) -> Result<HashMap<String, FieldMetadata>, String> {
         let metadata = fs::read(path).unwrap();
+
+        let mut metadata_pointer = 0; // pointer that points to the position where we should start reading
+
         let ptr = metadata.as_ptr();
         let fields_number: usize = 0;
         copy(ptr, fields_number as *const usize as *mut u8, FIELD_NUMBER_SIZE);
+        metadata_pointer += FIELD_NUMBER_SIZE;
         let mut map: HashMap<String, FieldMetadata> = HashMap::with_capacity(fields_number);
 
-        let first_bit_mask: u8 = 0b0000_0001;
-        let second_bit_mask: u8 = 0b0000_0010;
-        let third_bit_mask: u8 = 0b0000_0100;
-        let mut offset = 0;
+        let data_type_mask: u8 = 0b0000_0000;
+        let primary: u8 = 0b0000_0001;
+        let mut value_offset = 0; // offset of the current field's value
 
         for _ in 0..fields_number {
             let field_type_primary: u8 = 0;
-            copy(ptr, field_type_primary as *mut u8, FIELD_TYPE_PRIMARY);
+            copy(ptr.add(metadata_pointer), field_type_primary as *mut u8, FIELD_TYPE_PRIMARY);
+            metadata_pointer += FIELD_TYPE_PRIMARY;
 
-            let second_bit = (field_type_primary & second_bit_mask) == 0;
-            let third_bit = (field_type_primary & third_bit_mask) == 0;
+            let data_type_bit_code = (field_type_primary >> 1) | data_type_mask;
             let mut size: usize = 0;
-            let data_type = if second_bit && third_bit {
-                // 00
-                size= INTEGER_SIZE;
-                DataType::INTEGER
-            } else if !second_bit && third_bit {
-                // 01
-                size= FLOAT_SIZE;
-                DataType::FLOAT
-            } else if second_bit && !third_bit {
-                // 10
-                size= BOOLEAN_SIZE;
-                DataType::BOOLEAN
-            } else {
-                // 11
-                copy(ptr, field_type_primary as *const usize as *mut u8, TEXT_SIZE);
-                DataType::TEXT(size)
+
+            let data_type = match DataType::from_bit_code(data_type_bit_code)? {
+                DataType::TEXT(_) => {
+                    copy(ptr.add(metadata_pointer), field_type_primary as *const usize as *mut u8, TEXT_SIZE);
+                    metadata_pointer += TEXT_SIZE;
+                    DataType::TEXT(size)
+                }
+                DataType::INTEGER => {
+                    size = INTEGER_SIZE;
+                    DataType::INTEGER
+                }
+                DataType::FLOAT => {
+                    size = FLOAT_SIZE;
+                    DataType::FLOAT
+                }
+                DataType::BOOLEAN => {
+                    size = BOOLEAN_SIZE;
+                    DataType::BOOLEAN
+                }
             };
 
-            offset += size;
 
-            let is_primary = (field_type_primary & first_bit_mask) == 1;
+            let is_primary = (field_type_primary & primary) == 1;
 
             let mut buf: [u8; FIELD_NAME_SIZE] = [0; FIELD_NAME_SIZE];
 
-            copy(ptr, buf.as_mut_ptr(), FIELD_NAME_SIZE);
+            copy(ptr.add(metadata_pointer), buf.as_mut_ptr(), FIELD_NAME_SIZE);
+            metadata_pointer += FIELD_NAME_SIZE;
 
             let definition = FieldDefinition::new(u8_array_to_string(&buf), data_type, is_primary);
 
-            map.insert(u8_array_to_string(&buf), FieldMetadata::new(definition, offset, size));
+            map.insert(u8_array_to_string(&buf), FieldMetadata::new(definition, value_offset, size));
+
+            value_offset += size;
         }
 
-        map
+        Ok(map)
     }
 
     fn load_data_type(byte: u8) {
@@ -1105,7 +1149,7 @@ impl FieldMetadata {
         FieldMetadata {
             field_definition,
             offset,
-            size
+            size,
         }
     }
 }

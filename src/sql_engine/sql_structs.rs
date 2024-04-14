@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 use crate::storage_engine::config::DATA_FOLDER;
-use crate::storage_engine::core::{Pager, Row, Table};
+use crate::storage_engine::core::{Row, Table};
+use crate::utils::utils::is_folder_empty;
 
 pub(crate) trait Printable {
     fn print_stmt(&self) {}
@@ -15,7 +16,7 @@ pub(crate) trait Printable {
 pub(crate) enum SqlStmt {
     SELECT(SelectStmt),
     INSERT(InsertStmt),
-    CREATE(CreateStmt)
+    CREATE(CreateStmt),
 }
 
 impl Printable for SelectStmt {
@@ -123,23 +124,22 @@ impl InsertStmt {
         let files = fs::read_dir(&path).unwrap();
         for entry in files {
             let entry = entry.unwrap();
-
         }
         Ok(1)
     }
 
-    fn check_folder(&self, path:&Path) -> Result<(), String> {
+    fn check_folder(&self, path: &Path) -> Result<(), String> {
         match fs::metadata(path) {
             Ok(metadata) => {
                 if metadata.is_file() {
-                    return Err(format!("Can not load table '{}' from disk.", self.table))
+                    return Err(format!("Can not load table '{}' from disk.", self.table));
                 } else {
                     Ok(())
                 }
             }
             Err(_) => {
                 match fs::create_dir(path) {
-                    Ok(_) => {Ok(())}
+                    Ok(_) => { Ok(()) }
                     Err(_) => {
                         Err(format!("Can not create table '{}' in disk.", self.table))
                     }
@@ -148,7 +148,7 @@ impl InsertStmt {
         }
     }
 
-    fn check_data_file(&self){
+    fn check_data_file(&self) {
         let mut path = PathBuf::new();
         path.push(DATA_FOLDER);
         path.push(&self.table);
@@ -205,23 +205,23 @@ impl WhereExpr {
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct CreateStmt {
     table: String,
-    definitions: Vec<FieldDefinition>
+    definitions: Vec<FieldDefinition>,
 }
 
 impl CreateStmt {
     pub(crate) fn new(table: String, definitions: Vec<FieldDefinition>) -> CreateStmt {
         CreateStmt {
             table,
-            definitions
+            definitions,
         }
     }
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct FieldDefinition {
-    field: String,
-    data_type: DataType,
-    is_primary_key: bool
+    pub field: String,
+    pub data_type: DataType,
+    pub is_primary_key: bool,
 }
 
 impl FieldDefinition {
@@ -229,7 +229,7 @@ impl FieldDefinition {
         FieldDefinition {
             field,
             data_type,
-            is_primary_key
+            is_primary_key,
         }
     }
 
@@ -240,7 +240,7 @@ impl FieldDefinition {
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct IndexCreationStmt {
-    field: String
+    field: String,
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
@@ -526,18 +526,23 @@ pub enum DataType {
     BOOLEAN,
 }
 
-fn is_folder_empty(folder_path: &Path) -> bool {
-    match fs::read_dir(folder_path) {
-        Ok(entries) => {
-            for entry in entries {
-                if let Ok(_) = entry {
-                    return false;
-                }
-            }
-            true
+impl DataType {
+    pub fn to_bit_code(&self) -> u8 {
+        match self {
+            DataType::TEXT(_) => { 0b0000_0000 }
+            DataType::INTEGER => { 0b0000_0001 }
+            DataType::FLOAT => { 0b0000_0010 }
+            DataType::BOOLEAN => { 0b0000_0011 }
         }
-        Err(_) => {
-            true
+    }
+
+    pub fn from_bit_code(bit_code: u8) -> Result<DataType, String> {
+        match bit_code {
+            0b0000_0000 => {Ok(DataType::TEXT(255))}
+            0b0000_0001 => {Ok(DataType::INTEGER)}
+            0b0000_0010 => {Ok(DataType::FLOAT)}
+            0b0000_0011 => {Ok(DataType::BOOLEAN)}
+            _ => {Err(format!("Unkown bit code {}", bit_code))}
         }
     }
 }

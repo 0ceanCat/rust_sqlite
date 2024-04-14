@@ -87,11 +87,11 @@ the following 2 bits for data
 11 -> text
  */
 pub const FIELD_TYPE_PRIMARY: usize = 1;
-pub const TEXT_SIZE: usize = 1; // if the type is TEXT, there is an additional byte that represents the max size of this text
+pub const TEXT_SIZE: usize = 2; // if the type is TEXT, there is an additional byte that represents the max size of this text
 
 
 pub const INTEGER_SIZE: usize = 4;
 pub const FLOAT_SIZE: usize = 4;
 pub const BOOLEAN_SIZE: usize = 1;
 
-pub const DATA_FOLDER: &str = "data";
+pub const DATA_FOLDER: &str = "./data";
