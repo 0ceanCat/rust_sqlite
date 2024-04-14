@@ -12,6 +12,7 @@ pub(crate) trait Printable {
 pub(crate) enum SqlStmt {
     SELECT(SelectStmt),
     INSERT(InsertStmt),
+    CREATE(CreateStmt)
 }
 
 impl Printable for SelectStmt {
@@ -34,6 +35,13 @@ impl Printable for InsertStmt {
         println!("table name: {}", self.table);
         println!("fields: {:?}", self.fields);
         println!("values: {:?}", self.values);
+    }
+}
+
+impl Printable for CreateStmt {
+    fn print_stmt(&self) {
+        println!("table name: {}", self.table);
+        println!("defined fields: {:?}", self.definitions);
     }
 }
 
@@ -75,6 +83,8 @@ impl SelectStmt {
             let where_expr = self.where_expr.as_ref().unwrap();
             let set = where_expr.execute(&mut table)?;
             result = set.into_iter().collect();
+        } else {
+            result = table.read_all();
         }
         if self.order_by_expr.is_some() {
             todo!()
@@ -146,6 +156,47 @@ impl WhereExpr {
         }
         Ok(set)
     }
+}
+
+#[derive(PartialEq, PartialOrd, Debug)]
+pub(crate) struct CreateStmt {
+    table: String,
+    definitions: Vec<FieldDefinition>
+}
+
+impl CreateStmt {
+    pub(crate) fn new(table: String, definitions: Vec<FieldDefinition>) -> CreateStmt {
+        CreateStmt {
+            table,
+            definitions
+        }
+    }
+}
+
+#[derive(PartialEq, PartialOrd, Debug)]
+pub(crate) struct FieldDefinition {
+    field: String,
+    data_type: DataType,
+    is_primary_key: bool
+}
+
+impl FieldDefinition {
+    pub fn new(field: String, data_type: DataType, is_primary_key: bool) -> FieldDefinition {
+        FieldDefinition {
+            field,
+            data_type,
+            is_primary_key
+        }
+    }
+
+    pub fn is_primary(&self) -> bool {
+        self.is_primary_key
+    }
+}
+
+#[derive(PartialEq, PartialOrd, Debug)]
+pub(crate) struct IndexCreationStmt {
+    field: String
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
@@ -269,13 +320,11 @@ impl Operator {
             LT => { a < b }
             LTE => { a <= b }
             IN(negative) => {
-                let r = if let Value::Array(vec) = b {
-                    vec.contains(&a)
+                if let Value::Array(vec) = b {
+                    vec.contains(&a) ^ negative
                 } else {
                     false
-                };
-
-                r ^ negative
+                }
             }
         }
     }
@@ -330,7 +379,7 @@ pub(crate) enum Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match self {
-            Value::Integer(i) => {*i == other.unwrap_into_int().unwrap()}
+            Value::Integer(i) => { *i == other.unwrap_into_int().unwrap() }
             Value::Float(f) => { *f == other.unwrap_into_float().unwrap() }
             Value::Boolean(b) => { *b == other.unwrap_into_bool().unwrap() }
             Value::String(s) => {
@@ -342,13 +391,13 @@ impl PartialEq for Value {
     }
 }
 
-impl PartialOrd for Value{
+impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self {
-            Value::Integer(i) => {i.partial_cmp(&other.unwrap_into_int().unwrap())}
+            Value::Integer(i) => { i.partial_cmp(&other.unwrap_into_int().unwrap()) }
             Value::Float(f) => { f.partial_cmp(&other.unwrap_into_float().unwrap()) }
             Value::Boolean(b) => { b.partial_cmp(&other.unwrap_into_bool().unwrap()) }
-            Value::String(s) => {s.partial_cmp(&other.unwrap_as_string().unwrap())}
+            Value::String(s) => { s.partial_cmp(&other.unwrap_as_string().unwrap()) }
             Value::Array(a) => { None }
             Value::SelectStmt(s) => { None }
         }
@@ -423,4 +472,12 @@ impl Value {
             _ => false
         }
     }
+}
+
+#[derive(PartialEq, PartialOrd, Debug)]
+pub enum DataType {
+    TEXT(usize),
+    INTEGER,
+    FLOAT,
+    BOOLEAN,
 }

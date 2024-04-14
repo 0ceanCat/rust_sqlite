@@ -55,6 +55,9 @@ fn main() -> Result<(), String> {
             SqlStmt::INSERT(insert) => {
                 println!("{:?}", insert.execute()?);
             }
+            SqlStmt::CREATE(create) => {
+                println!("{:?}", create);
+            }
         }
     }
     Ok(())

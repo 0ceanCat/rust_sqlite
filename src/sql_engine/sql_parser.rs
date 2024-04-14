@@ -1,4 +1,4 @@
-use crate::sql_engine::sql_structs::{Printable, SelectStmt, WhereExpr, InsertStmt, ConditionCluster, ConditionExpr, Operator, LogicalOperator, Value, OrderByCluster, OrderByExpr, Order, SqlStmt};
+use crate::sql_engine::sql_structs::{SelectStmt, WhereExpr, InsertStmt, ConditionCluster, ConditionExpr, Operator, LogicalOperator, Value, OrderByCluster, OrderByExpr, Order, SqlStmt, CreateStmt, FieldDefinition, DataType};
 use crate::sql_engine::keywords::*;
 
 static BLANK_SYMBOLS: [char; 4] = [' ', '\t', '\n', '\r'];
@@ -31,6 +31,10 @@ impl SqlParser {
             let mut insert_stmt_parser = InsertStmtParser { sql_parser: self };
             let insert_stmt = insert_stmt_parser.parse()?;
             Ok(SqlStmt::INSERT(insert_stmt))
+        } else if self.starts_with(CREATE_TABLE) {
+            let mut create_stmt_parser = CreateStmtParser { sql_parser: self };
+            let create_stmt = create_stmt_parser.parse()?;
+            Ok(SqlStmt::CREATE(create_stmt))
         } else {
             Err(String::from("Unknown sql statement."))
         }
@@ -47,7 +51,7 @@ impl SqlParser {
     }
 
     fn is_end(&self) -> bool {
-        self.position >= self.input.len()
+        self.position >= self.input.len() || self.current_char() == ';'
     }
 
     fn read_token(&mut self) -> Result<String, String> {
@@ -127,7 +131,7 @@ impl<'a> SelectStmtParser<'a> {
         let order_by_stmt: Option<OrderByCluster> = if self.sql_parser.is_end() {
             None
         } else {
-            Some(OrderByStmtParser { sql_parser: self.sql_parser }.parse()?)
+            Some(OrderByExprParser { sql_parser: self.sql_parser }.parse()?)
         };
 
         Ok(SelectStmt::new(selected_fields, table, where_stmt, order_by_stmt))
@@ -266,7 +270,7 @@ impl<'a> InsertStmtParser<'a> {
         let values = self.parse_values()?;
 
         if fields.first().unwrap() != "*" && values.len() != fields.len() {
-            return Err(String::from("Number of inserted rows and row values are not the same."))
+            return Err(String::from("Number of inserted rows and row values are not the same."));
         }
 
         Ok(InsertStmt::new(table_name, fields, values))
@@ -326,23 +330,85 @@ impl<'a> InsertStmtParser<'a> {
                 return Err(String::from("Syntax error, `values` is not closed, expected a ')'"));
             }
             self.sql_parser.advance();
-            return Ok(values)
+            return Ok(values);
         } else {
             return Err(String::from("Syntax error, `values` is uncompleted."));
         }
     }
 }
 
-struct OrderByStmtParser<'a> {
-    sql_parser: &'a mut SqlParser
+struct CreateStmtParser<'a> {
+    sql_parser: &'a mut SqlParser,
 }
 
-impl<'a> OrderByStmtParser<'a> {
+impl<'a> CreateStmtParser<'a> {
+    fn parse(&mut self) -> Result<CreateStmt, String> {
+        self.sql_parser.position += CREATE_TABLE.len();
+        self.sql_parser.skip_white_spaces();
+
+        let table_name = self.sql_parser.parse_table_name()?;
+
+        self.sql_parser.skip_white_spaces();
+
+        let field_definitions = self.parse_field_definitions()?;
+
+        Ok(CreateStmt::new(table_name, field_definitions))
+    }
+
+    fn parse_field_definitions(&mut self) -> Result<Vec<FieldDefinition>, String> {
+        if !self.sql_parser.is_end() && self.sql_parser.current_char() == '(' {
+            self.sql_parser.advance();
+            let mut field_definitions = Vec::<FieldDefinition>::new();
+
+            while !self.sql_parser.is_end() {
+                self.sql_parser.skip_white_spaces();
+                let field = self.sql_parser.read_token()?;
+                check_valid_field_name(&field)?;
+                check_key_word(&field)?;
+                self.sql_parser.skip_white_spaces();
+                let data_type = DataTypeParser { sql_parser: self.sql_parser }.parse()?;
+                self.sql_parser.skip_white_spaces();
+
+                let primary = self.sql_parser.starts_with(PRIMARY);
+
+                if primary {
+                    self.sql_parser.position += PRIMARY.len();
+                    self.sql_parser.skip_white_spaces();
+                }
+
+                field_definitions.push(FieldDefinition::new(field, data_type, primary));
+
+                if !self.sql_parser.is_end() && self.sql_parser.current_char() == ',' {
+                    self.sql_parser.advance();
+                } else if !self.sql_parser.is_end() && self.sql_parser.current_char() == ')' {
+                    break;
+                }
+            }
+
+            if field_definitions.is_empty() {
+                return Err(String::from("Syntax error, Create statement has no defined values"));
+            }
+
+            if field_definitions.iter().filter(|d| d.is_primary()).count() > 1 {
+                return Err(String::from("Each table can only have ONE primary key."));
+            }
+            Ok(field_definitions)
+        } else {
+            Err(String::from("Syntax error, Create statement has no defined values"))
+        }
+    }
+}
+
+struct OrderByExprParser<'a> {
+    sql_parser: &'a mut SqlParser,
+}
+
+impl<'a> OrderByExprParser<'a> {
     pub(crate) fn parse(&mut self) -> Result<OrderByCluster, String> {
         self.sql_parser.skip_white_spaces();
 
         if !self.sql_parser.starts_with(ORDER_BY) {
-            return Err(format!("Syntax error, expect `order by`, but found {}", self.sql_parser.read_token()?))
+            return Err(format!("Syntax error, expect `order by`, but found {}", self.sql_parser.read_token()?));
         }
 
         self.sql_parser.position += ORDER_BY.len();
@@ -357,7 +423,7 @@ impl<'a> OrderByStmtParser<'a> {
             check_key_word(&field)?;
             self.sql_parser.skip_white_spaces();
             let mut order: Order;
-            if self.sql_parser.is_end() || self.sql_parser.current_char() == ','{
+            if self.sql_parser.is_end() || self.sql_parser.current_char() == ',' {
                 order = Order::ASC;
             } else {
                 order = Order::try_from(self.sql_parser.read_token()?.as_str())?;
@@ -366,7 +432,7 @@ impl<'a> OrderByStmtParser<'a> {
             order_bys.push(OrderByExpr::new(field, order));
         }
 
-        Ok(OrderByCluster {order_by_exprs: order_bys})
+        Ok(OrderByCluster { order_by_exprs: order_bys })
     }
 }
 
@@ -507,13 +573,46 @@ impl<'a> OperatorParser<'a> {
         if !self.sql_parser.is_end() && self.sql_parser.starts_with("in ") {
             operator.push_str("in");
             self.sql_parser.position += "in".len();
-        }else {
+        } else {
             while !self.sql_parser.is_end() && OPERATORS_SYMBOLS.contains(&self.sql_parser.current_char()) {
                 operator.push(self.sql_parser.current_char());
                 self.sql_parser.advance();
             }
         }
         Operator::try_from(operator)
+    }
+}
+
+struct DataTypeParser<'a> {
+    sql_parser: &'a mut SqlParser,
+}
+
+impl<'a> DataTypeParser<'a> {
+    fn parse(&mut self) -> Result<DataType, String> {
+        let data_type = self.sql_parser.read_token()?;
+        self.sql_parser.skip_white_spaces();
+
+        if data_type == "text" {
+            let mut size: usize = 255;
+            if !self.sql_parser.is_end() && self.sql_parser.current_char() == '(' {
+                self.sql_parser.advance(); // skip '('
+                size = self.sql_parser.read_token()?.parse().unwrap_or(255);
+                self.sql_parser.skip_white_spaces();
+                if self.sql_parser.is_end() || self.sql_parser.current_char() != ')' {
+                    return Err(String::from("Syntax error, expected a ')'."));
+                }
+                self.sql_parser.advance();
+            }
+
+            Ok(DataType::TEXT(size))
+        } else {
+            match data_type.as_str() {
+                "integer" => { Ok(DataType::INTEGER) }
+                "float" => { Ok(DataType::FLOAT) }
+                "boolean" => { Ok(DataType::BOOLEAN) }
+                _ => { Err(format!("Unknown data type `{}` was found.", data_type)) }
+            }
+        }
     }
 }
 
