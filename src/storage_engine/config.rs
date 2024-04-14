@@ -81,10 +81,10 @@ pub const FIELD_NAME_SIZE: usize = 64;
 00000001
 first bit is for primary,
 the following 2 bits for data
-00 -> integer
-01 -> float
-10 -> boolean
-11 -> text
+00 -> text
+01 -> int
+10 -> float
+11 -> boolean
  */
 pub const FIELD_TYPE_PRIMARY: usize = 1;
 pub const TEXT_SIZE: usize = 2; // if the type is TEXT, there is an additional byte that represents the max size of this text

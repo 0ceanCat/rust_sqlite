@@ -1,5 +1,3 @@
-#![feature(raw_ref_op)]
-
 extern crate core;
 
 use std::fs::{File, OpenOptions};
