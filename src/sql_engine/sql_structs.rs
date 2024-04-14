@@ -1,30 +1,12 @@
 use std::cmp::{Ordering, PartialEq, PartialOrd};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
+use crate::storage_engine::config::DATA_FOLDER;
 use crate::storage_engine::core::{Pager, Row, Table};
-
-const DATA_FOLDER: &str = "data";
-
-struct TableCache {
-    tables: HashMap<String, Table>
-}
-
-impl TableCache {
-    pub fn get_or_load_table(&mut self, path: &Path) -> &Table {
-        let path_str = String::from(path.to_str().unwrap());
-        if !self.tables.contains_key(&path_str) {
-            let pager = Pager::open(path_str.as_str());
-            let table = Table::new(pager);
-            self.tables.insert(path_str.clone(), table);
-        }
-
-        self.tables.get_mut(&path_str).unwrap()
-    }
-}
 
 pub(crate) trait Printable {
     fn print_stmt(&self) {}
@@ -96,7 +78,7 @@ impl SelectStmt {
     }
 
     pub(crate) fn execute(&self) -> Result<Vec<Row>, String> {
-        let file = self.table_file()?;
+        /*let file = self.table_file()?;
         let pager = Pager::open_from(file);
         let mut table = Table::new(pager);
         let mut result = Vec::<Row>::new();
@@ -110,7 +92,8 @@ impl SelectStmt {
         if self.order_by_expr.is_some() {
             todo!()
         }
-        Ok(result)
+        Ok(result)*/
+        todo!()
     }
 }
 

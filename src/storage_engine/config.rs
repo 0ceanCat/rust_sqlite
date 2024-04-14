@@ -70,3 +70,28 @@ pub const INTERNAL_NODE_MAX_KEYS: usize = 3;
 
 pub const INTERNAL_NODE_MAX_CELLS: usize = 3;
 pub const INVALID_PAGE_NUM: usize = u32::MAX as usize;
+
+/*
+metadata file structure
+*/
+pub const FIELD_NUMBER_SIZE: usize = 2;
+pub const FIELD_NAME_SIZE: usize = 64;
+/*
+1 byte for field data type + if it is primary
+00000001
+first bit is for primary,
+the following 2 bits for data
+00 -> integer
+01 -> float
+10 -> boolean
+11 -> text
+ */
+pub const FIELD_TYPE_PRIMARY: usize = 1;
+pub const TEXT_SIZE: usize = 1; // if the type is TEXT, there is an additional byte that represents the max size of this text
+
+
+pub const INTEGER_SIZE: usize = 4;
+pub const FLOAT_SIZE: usize = 4;
+pub const BOOLEAN_SIZE: usize = 1;
+
+pub const DATA_FOLDER: &str = "data";

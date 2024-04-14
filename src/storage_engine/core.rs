@@ -3,13 +3,16 @@
 extern crate core;
 
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::windows::fs::FileExt;
 use std::process::{exit};
-use std::{ptr};
+use std::{fs, ptr};
+use std::collections::HashMap;
+use std::mem::offset_of;
+use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use regex::Regex;
-use crate::sql_engine::sql_structs::{Operator, Value};
+use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Operator, Value};
 use crate::storage_engine::common::{copy, indent};
 use crate::storage_engine::config::*;
 use crate::storage_engine::cursor::Cursor;
@@ -26,9 +29,154 @@ macro_rules! to_u8_array {
     };
 }
 
+macro_rules! build_path {
+    ( $( $x:expr ),* ) => {
+        {
+           let mut path = PathBuf::new();
+           $(
+                path.push($x);
+            )*
+            path
+        }
+    };
+}
+
 fn u8_array_to_string(array: &[u8]) -> String {
-    let end = array.iter().position(|c|  *c == 0).unwrap_or(array.len());
+    let end = array.iter().position(|c| *c == 0).unwrap_or(array.len());
     String::from_utf8_lossy(&array[..end]).to_string()
+}
+
+pub struct TableManager {
+    tables: HashMap<String, Table>,
+    metadata: HashMap<String, HashMap<String, FieldMetadata>>,
+}
+
+impl TableManager {
+    pub fn new() -> TableManager {
+        TableManager {
+            tables: HashMap::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn get_or_load_table(&mut self, path: &Path) -> &Table {
+        let path_str = String::from(path.to_str().unwrap());
+        if !self.tables.contains_key(&path_str) {
+            let table = Table::new(path_str.as_str());
+            self.tables.insert(path_str.clone(), table);
+        }
+
+        self.tables.get_mut(&path_str).unwrap()
+    }
+
+    pub fn is_field_of_table(&mut self, table_name: &str, field_name: &str) -> bool{
+        self.get_metadata(table_name, field_name).is_some()
+    }
+
+    pub fn get_metadata(&mut self, table_name: &str, field_name: &str) -> Option<&FieldMetadata>{
+        match self.get_or_load_metadata(table_name) {
+            None => {None}
+            Some(map) => {
+                map.get(field_name)
+            }
+        }
+    }
+
+    fn get_or_load_metadata(&mut self, table_name: &str) -> Option<&HashMap<String, FieldMetadata>> {
+        let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
+        if !self.metadata.contains_key(table_name) {
+            let metadata = self.load_metadata(&path);
+            self.metadata.insert(String::from(table_name), metadata);
+        }
+
+        self.metadata.get(table_name)
+    }
+
+    pub fn flash_to_disk(&mut self) {
+        for table in self.tables.values_mut() {
+            table.flush_to_disk();
+        }
+    }
+
+    pub fn print_btree(&mut self, table_name: &str) {
+        match self.tables.get_mut(table_name) {
+            None => {}
+            Some(table) => {
+                table.print_tree(0, 0)
+            }
+        }
+    }
+
+    fn load_metadata(&mut self, path: &Path) -> HashMap<String, FieldMetadata> {
+        let metadata = fs::read(path).unwrap();
+        let ptr = metadata.as_ptr();
+        let fields_number: usize = 0;
+        copy(ptr, fields_number as *const usize as *mut u8, FIELD_NUMBER_SIZE);
+        let mut map: HashMap<String, FieldMetadata> = HashMap::with_capacity(fields_number);
+
+        let first_bit_mask: u8 = 0b0000_0001;
+        let second_bit_mask: u8 = 0b0000_0010;
+        let third_bit_mask: u8 = 0b0000_0100;
+        let mut offset = 0;
+
+        for _ in 0..fields_number {
+            let field_type_primary: u8 = 0;
+            copy(ptr, field_type_primary as *mut u8, FIELD_TYPE_PRIMARY);
+
+            let second_bit = (field_type_primary & second_bit_mask) == 0;
+            let third_bit = (field_type_primary & third_bit_mask) == 0;
+            let mut size: usize = 0;
+            let data_type = if second_bit && third_bit {
+                // 00
+                size= INTEGER_SIZE;
+                DataType::INTEGER
+            } else if !second_bit && third_bit {
+                // 01
+                size= FLOAT_SIZE;
+                DataType::FLOAT
+            } else if second_bit && !third_bit {
+                // 10
+                size= BOOLEAN_SIZE;
+                DataType::BOOLEAN
+            } else {
+                // 11
+                copy(ptr, field_type_primary as *const usize as *mut u8, TEXT_SIZE);
+                DataType::TEXT(size)
+            };
+
+            offset += size;
+
+            let is_primary = (field_type_primary & first_bit_mask) == 1;
+
+            let mut buf: [u8; FIELD_NAME_SIZE] = [0; FIELD_NAME_SIZE];
+
+            copy(ptr, buf.as_mut_ptr(), FIELD_NAME_SIZE);
+
+            let definition = FieldDefinition::new(u8_array_to_string(&buf), data_type, is_primary);
+
+            map.insert(u8_array_to_string(&buf), FieldMetadata::new(definition, offset, size));
+        }
+
+        map
+    }
+
+    fn load_data_type(byte: u8) {
+        let second_bit_mask: u8 = 0b0000_0010;
+        let third_bit_mask: u8 = 0b0000_0100;
+
+        let second_bit = (byte & second_bit_mask) != 0;
+        let third_bit = (byte & third_bit_mask) != 0;
+
+        if !second_bit && !third_bit {
+            println!("Flag 0 is set");
+        } else if !second_bit && third_bit {
+            println!("Flag 1 is set");
+        } else if second_bit && !third_bit {
+            println!("Flag 2 is set");
+        } else {
+            println!("Flag 3 is set");
+        }
+    }
 }
 
 pub struct Pager {
@@ -464,7 +612,8 @@ pub struct Table {
 }
 
 impl Table {
-    pub(crate) fn new(pager: Pager) -> Table {
+    pub(crate) fn new(path: &str) -> Table {
+        let pager = Pager::open(path);
         let mut pager = pager;
         if pager.size == 0 {
             let first_page = pager.get_page_or_create(0);
@@ -494,15 +643,16 @@ impl Table {
         while !cursor.is_end() {
             let row = Row::deserialize_row(cursor.cursor_value());
             let matched = match field.as_str() {
-                "id" => {operator.operate(&Value::Integer(row.id as i32), &value)}
+                "id" => { operator.operate(&Value::Integer(row.id as i32), &value) }
                 "username" => {
                     let result = u8_array_to_string(&row.username);
                     operator.operate(&Value::String(result), &value)
                 }
                 "email" => {
                     let result = u8_array_to_string(&row.email);
-                    operator.operate(&Value::String(result), &value)}
-                _ => {false}
+                    operator.operate(&Value::String(result), &value)
+                }
+                _ => { false }
             };
 
             if matched {
@@ -937,63 +1087,25 @@ pub fn new_input_buffer() -> &'static str {
         std::io::stdout().flush().expect("flush failed!");
         std::io::stdin().read_line(&mut input).unwrap();
         if input.trim().ends_with(";") {
-            break
+            break;
         }
         print!(">")
     }
     input.leak().trim()
 }
 
-pub fn do_meta_command(input: &str) -> MetaCommandResult {
-    if input == ".exit" {
-        return MetaCommandResult::MetaCommandExit;
-    }
-    return MetaCommandResult::MetaCommandSuccess;
+pub struct FieldMetadata {
+    field_definition: FieldDefinition,
+    pub offset: usize,
+    pub size: usize,
 }
 
-pub fn prepare_statement(input: &str) -> Result<Statement, &'static str> {
-    let re = Regex::new(r"insert into user values((\d+) (\S+) (\S+))").unwrap();
-    if input.starts_with("insert into") && re.is_match(input) {
-        if let Some(captures) = re.captures(input) {
-            let id: usize = captures.get(1).unwrap().as_str().parse().unwrap();
-            let username = captures.get(2).unwrap().as_str();
-            let email = captures.get(3).unwrap().as_str();
-
-            if username.len() > COLUMN_USERNAME_SIZE || email.len() > COLUMN_EMAIL_SIZE {
-                return Err("String is too long.");
-            }
-
-            let row = Row::new(id, to_u8_array!(username, COLUMN_USERNAME_SIZE), to_u8_array!(email, COLUMN_EMAIL_SIZE));
-            return Ok(Statement::new(StatementType::StatementInsert, Some(row)));
-        }
-        return Err("Insert syntax error");
-    } else if input == "select" {
-        return Ok(Statement::new(StatementType::StatementSelect, None));
-    } else if input == "flush" {
-        return Ok(Statement::new(StatementType::StatementFlush, None));
-    } else if input == "btree" {
-        return Ok(Statement::new(StatementType::StatementBTree, None));
-    }
-
-    Err("GG")
-}
-
-pub fn execute_statement(statement: &Statement, table: &mut Table) -> ExecutionResult {
-    match statement.type_ {
-        StatementType::StatementInsert => {
-            execute_insert(statement, table);
-            ExecutionResult::ExecutionSuccess
-        }
-        StatementType::StatementFlush => {
-            table.flush_to_disk();
-            ExecutionResult::ExecutionSuccess
-        }
-        StatementType::StatementBTree => {
-            table.print_tree(0, 0);
-            ExecutionResult::ExecutionSuccess
-        }
-        _ => {
-            ExecutionResult::ExecutionSuccess
+impl FieldMetadata {
+    pub fn new(field_definition: FieldDefinition, offset: usize, size: usize) -> FieldMetadata {
+        FieldMetadata {
+            field_definition,
+            offset,
+            size
         }
     }
 }
