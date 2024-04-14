@@ -1,9 +1,30 @@
 use std::cmp::{Ordering, PartialEq, PartialOrd};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
 use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 use crate::storage_engine::core::{Pager, Row, Table};
+
+const DATA_FOLDER: &str = "data";
+
+struct TableCache {
+    tables: HashMap<String, Table>
+}
+
+impl TableCache {
+    pub fn get_or_load_table(&mut self, path: &Path) -> &Table {
+        let path_str = String::from(path.to_str().unwrap());
+        if !self.tables.contains_key(&path_str) {
+            let pager = Pager::open(path_str.as_str());
+            let table = Table::new(pager);
+            self.tables.insert(path_str.clone(), table);
+        }
+
+        self.tables.get_mut(&path_str).unwrap()
+    }
+}
 
 pub(crate) trait Printable {
     fn print_stmt(&self) {}
@@ -111,7 +132,47 @@ impl InsertStmt {
     }
 
     pub fn execute(&self) -> Result<usize, String> {
-        todo!()
+        let mut path = PathBuf::new();
+        path.push(DATA_FOLDER);
+        path.push(&self.table);
+        self.check_folder(&path)?;
+        self.check_data_file();
+        let files = fs::read_dir(&path).unwrap();
+        for entry in files {
+            let entry = entry.unwrap();
+
+        }
+        Ok(1)
+    }
+
+    fn check_folder(&self, path:&Path) -> Result<(), String> {
+        match fs::metadata(path) {
+            Ok(metadata) => {
+                if metadata.is_file() {
+                    return Err(format!("Can not load table '{}' from disk.", self.table))
+                } else {
+                    Ok(())
+                }
+            }
+            Err(_) => {
+                match fs::create_dir(path) {
+                    Ok(_) => {Ok(())}
+                    Err(_) => {
+                        Err(format!("Can not create table '{}' in disk.", self.table))
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_data_file(&self){
+        let mut path = PathBuf::new();
+        path.push(DATA_FOLDER);
+        path.push(&self.table);
+        if is_folder_empty(&path) {
+            path.push(format!("{}_main", &self.table));
+            File::create(path);
+        }
     }
 }
 
@@ -480,4 +541,20 @@ pub enum DataType {
     INTEGER,
     FLOAT,
     BOOLEAN,
+}
+
+fn is_folder_empty(folder_path: &Path) -> bool {
+    match fs::read_dir(folder_path) {
+        Ok(entries) => {
+            for entry in entries {
+                if let Ok(_) = entry {
+                    return false;
+                }
+            }
+            true
+        }
+        Err(_) => {
+            true
+        }
+    }
 }
