@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use crate::build_path;
-use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Operator, Value};
+use crate::sql_engine::sql_structs::{ConditionExpr, DataType, FieldDefinition, Operator, Value};
+use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::utils::utils::{copy, indent, u8_array_to_string};
 use crate::storage_engine::config::*;
 use crate::storage_engine::cursor::Cursor;
@@ -56,7 +57,7 @@ impl TableManager {
         let map = self.get_or_load_metadata(table_name)?;
 
         match map.get(field_name) {
-            None => { Err(format!("Field {} does not exist in table {}.", field_name, table_name))}
+            None => { Err(format!("Field {} does not exist in table {}.", field_name, table_name)) }
             Some(meta) => { Ok(meta) }
         }
     }
@@ -304,7 +305,7 @@ impl Pager {
         self.pages[page_index].as_mut().unwrap().as_mut_ptr()
     }
 
-    pub(crate) fn get_leaf_node_cells_num(page: *mut u8) -> usize {
+    pub(crate) fn get_leaf_node_num_cells(page: *mut u8) -> usize {
         unsafe {
             let page_ptr = page.add(LEAF_NODE_NUM_CELLS_OFFSET);
             let cells_num: usize = 0;
@@ -564,7 +565,7 @@ impl Pager {
         match key {
             Value::STRING(string) => {
                 let mut bytes = Vec::<u8>::with_capacity(key_size);
-                bytes.as_slice().copy_from_slice(string.as_bytes());
+                bytes.as_mut_slice().copy_from_slice(string.as_bytes());
                 ptr::copy_nonoverlapping(bytes.as_ptr(), dst, key_size);
             }
             Value::INTEGER(i) => {
@@ -606,7 +607,7 @@ impl Pager {
                 self.get_node_biggest_key(right_child, key_type)
             }
             NodeType::Leaf => {
-                Pager::get_leaf_node_cell_key(node, Pager::get_leaf_node_cells_num(node) - 1, key_type)
+                Pager::get_leaf_node_cell_key(node, Pager::get_leaf_node_num_cells(node) - 1, key_type)
             }
         }
     }
@@ -679,11 +680,12 @@ impl Pager {
     }
 }
 
-pub trait Table{
+pub trait Table {
     fn begin(&mut self) -> Cursor;
-    fn get_pager(&mut self) -> &Pager;
-    fn get_root_index(&self) -> usize;
     fn insert(&mut self, page_index: usize, cell_index: usize, row: Row);
+    fn find_by_condition(&mut self, condition_expr: ConditionExpr) -> Cursor;
+    fn end(&mut self) -> Cursor;
+    fn is_index_table(&self) -> bool;
 }
 
 pub struct BtreeTable {
@@ -691,31 +693,35 @@ pub struct BtreeTable {
     pub pager: Pager,
     pub is_primary: bool,
     pub key_type: DataType,
-    pub key_size: usize
+    pub key_size: usize,
 }
 
 impl Table for BtreeTable {
     fn begin(&mut self) -> Cursor {
-        self.find_smallest_key()
-    }
-
-    fn get_pager(&mut self) -> &Pager {
-        &self.pager
-    }
-
-    fn get_root_index(&mut self) -> usize {
-        self.root_page_index
+        self.find_smallest_or_biggest_key(false)
     }
 
     fn insert(&mut self, page_index: usize, cell_index: usize, row: Row) {
         let page = self.pager.get_page_or_create(page_index);
-        let num_cells = Pager::get_leaf_node_cells_num(page);
+        let num_cells = Pager::get_leaf_node_num_cells(page);
 
         if num_cells >= LEAF_NODE_MAX_CELLS {
             self.split_and_insert(page_index, cell_index, row);
         } else {
             self.move_and_insert(page_index, cell_index, row);
         }
+    }
+
+    fn find_by_condition(&mut self, condition_expr: ConditionExpr) -> Cursor {
+        todo!()
+    }
+
+    fn end(&mut self) -> Cursor {
+        self.find_smallest_or_biggest_key(true)
+    }
+
+    fn is_index_table(&self) -> bool {
+        true
     }
 }
 
@@ -734,7 +740,7 @@ impl BtreeTable {
             is_primary: false,
             // TODO
             key_type: DataType::INTEGER,
-            key_size: DataType::INTEGER.get_size()
+            key_size: DataType::INTEGER.get_size(),
         }
     }
 
@@ -803,9 +809,9 @@ impl BtreeTable {
         }
     }
 
-    fn move_and_insert(&mut self, page_index: usize, cell_index: usize, row: Row){
+    fn move_and_insert(&mut self, page_index: usize, cell_index: usize, row: Row) {
         let page = self.pager.get_page_or_create(page_index);
-        let num_cells = Pager::get_leaf_node_cells_num(page);
+        let num_cells = Pager::get_leaf_node_num_cells(page);
         if cell_index < num_cells {
             copy(Pager::leaf_node_cell(page, cell_index),
                  Pager::leaf_node_cell(page, cell_index + 1),
@@ -814,7 +820,7 @@ impl BtreeTable {
         Pager::set_leaf_node_cell_key(page, cell_index, row.key);
         Pager::increment_leaf_node_cells_num(page);
         self.pager.mark_page_as_updated(page_index);
-        row.serialize_row(self.cursor_value());
+        row.serialize_row(Pager::leaf_node_value(page, cell_index));
     }
 
     pub fn read_all(&mut self) -> Vec<Row> {
@@ -839,21 +845,21 @@ impl BtreeTable {
         }
     }
 
-    pub(crate) fn find_smallest_key(&mut self) -> Cursor {
+    pub(crate) fn find_smallest_or_biggest_key(&mut self, biggest: bool) -> Cursor {
         let node_type = self.pager.get_node_type_by_index(self.root_page_index);
         match node_type {
             NodeType::Internal => {
-                self.internal_node_find_smallest_child(self.root_page_index)
+                self.internal_node_find_smallest_or_biggest(self.root_page_index, biggest)
             }
             NodeType::Leaf => {
-                self.leaf_node_find_smallest(self.root_page_index)
+                self.leaf_node_find_smallest_or_biggest(self.root_page_index, biggest)
             }
         }
     }
 
     fn leaf_node_find(&mut self, page_index: usize, key: &Value) -> Cursor {
         let node = self.pager.get_page_or_create(page_index);
-        let cells_num = Pager::get_leaf_node_cells_num(node);
+        let cells_num = Pager::get_leaf_node_num_cells(node);
 
         let mut min_index = 0;
         let mut right = cells_num;
@@ -873,8 +879,12 @@ impl BtreeTable {
         Cursor::at(self, page_index, min_index)
     }
 
-    fn leaf_node_find_smallest(&mut self, page_index: usize) -> Cursor {
-        Cursor::at(self, page_index, 0)
+    fn leaf_node_find_smallest_or_biggest(&mut self, page_index: usize, biggest: bool) -> Cursor {
+        let mut cell_index = 0;
+        if biggest {
+            cell_index = Pager::get_leaf_node_num_cells(self.pager.get_page_or_create(page_index))
+        }
+        Cursor::at(self, page_index, cell_index)
     }
 
     pub fn internal_node_find_child(&mut self, node: *mut u8, key: &Value) -> usize {
@@ -897,22 +907,27 @@ impl BtreeTable {
         min_index
     }
 
-    pub fn internal_node_find_smallest(&mut self, page_index: usize) -> Cursor {
+    pub fn internal_node_find_smallest_or_biggest(&mut self, page_index: usize, biggest: bool) -> Cursor {
         /*
           Return the index of the child which contains the smallest key
         */
         let node = self.pager.get_page_or_create(page_index);
 
-        // the first cell has always the smallest key
-        let child_index = Pager::get_internal_node_child(node, 0);
+        let mut key_index: usize = 0;
+
+        if biggest {
+            key_index = Pager::get_internal_node_num_keys(node) - 1;
+        }
+
+        let child_index = Pager::get_internal_node_child(node, key_index);
         let child = self.pager.get_page_or_create(child_index);
 
         match Pager::get_node_type(child) {
             NodeType::Leaf => {
-                self.leaf_node_find_smallest(child_index)
+                self.leaf_node_find_smallest_or_biggest(child_index, biggest)
             }
             NodeType::Internal => {
-                self.internal_node_find_smallest(child_index)
+                self.internal_node_find_smallest_or_biggest(child_index, biggest)
             }
         }
     }
@@ -1105,7 +1120,7 @@ impl BtreeTable {
             NodeType::Leaf => {
                 indent(indentation_level);
                 println!("* node {:p}, index: {}: ", node, page_num);
-                let num_keys = Pager::get_leaf_node_cells_num(node);
+                let num_keys = Pager::get_leaf_node_num_cells(node);
                 indent(indentation_level + 1);
                 println!("- leaf (size {})", num_keys);
                 for i in 0..num_keys {
@@ -1208,7 +1223,7 @@ impl SequentialTable {
         }
         SequentialTable {
             root_page_index: 0,
-            pager
+            pager,
         }
     }
 
@@ -1223,21 +1238,26 @@ impl SequentialTable {
     }
 }
 
-impl Table for SequentialTable{
+impl Table for SequentialTable {
     fn begin(&mut self) -> Cursor {
-        todo!()
-    }
-
-    fn get_pager(&mut self) -> &Pager {
-        todo!()
-    }
-
-    fn get_root_index(&self) -> usize {
         todo!()
     }
 
     fn insert(&mut self, page_index: usize, cell_index: usize, row: Row) {
         todo!()
+    }
+
+
+    fn find_by_condition(&mut self, condition_expr: ConditionExpr) -> Cursor {
+        todo!()
+    }
+
+    fn end(&mut self) -> Cursor {
+        todo!()
+    }
+
+    fn is_index_table(&self) -> bool {
+        false
     }
 }
 
@@ -1251,7 +1271,7 @@ pub struct Row {
     pub username: [u8; COLUMN_USERNAME_SIZE],
     pub email: [u8; COLUMN_EMAIL_SIZE],
     // TODO
-    pub key: usize
+    pub key: usize,
 }
 
 impl Row {
@@ -1260,7 +1280,7 @@ impl Row {
             id,
             username,
             email,
-            key: 1
+            key: 1,
         }
     }
 
@@ -1292,7 +1312,7 @@ impl Row {
             id: 0,
             username: [0u8; COLUMN_USERNAME_SIZE],
             email: [0u8; COLUMN_EMAIL_SIZE],
-            key: 1
+            key: 1,
         };
 
         unsafe {
@@ -1367,8 +1387,11 @@ pub fn execute_insert(statement: &Statement, table: &mut dyn Table) -> Execution
     let row_to_insert = &statement.row;
 
     let row = row_to_insert.as_ref().unwrap();
-
-    let mut cursor = table.table_find_by_key(Value::INTEGER(row.id as i32));
+    let mut cursor = if table.is_index_table() {
+        table.find_by_condition(ConditionExpr::new(OR, String::from("id"), Operator::EQUALS(false), Value::INTEGER(row.id as i32)))
+    } else {
+        table.end()
+    };
     cursor.insert_row(row.id, row);
     ExecutionResult::ExecutionSuccess
 }

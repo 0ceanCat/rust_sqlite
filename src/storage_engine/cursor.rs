@@ -12,7 +12,7 @@ pub struct Cursor<'a> {
 impl<'a> Cursor<'a> {
     pub(crate) fn at(table: &mut dyn Table, page_index: usize, cell_index: usize) -> Cursor {
         let page = table.get_pager().get_page_or_create(page_index);
-        let num_cells = Pager::get_leaf_node_cells_num(page);
+        let num_cells = Pager::get_leaf_node_num_cells(page);
         Cursor {
             table,
             page_index,
@@ -29,7 +29,7 @@ impl<'a> Cursor<'a> {
     pub(crate) fn table_end(table: &mut dyn Table) -> Cursor {
         let page_index = table.get_root_index();
         let page = table.get_pager().get_page_or_create(page_index);
-        let num_cells = Pager::get_leaf_node_cells_num(page);
+        let num_cells = Pager::get_leaf_node_num_cells(page);
         Cursor {
             table,
             page_index,
@@ -47,7 +47,7 @@ impl<'a> Cursor<'a> {
         let node = self.table.get_pager().get_page_or_create(self.page_index);
         self.cell_index += 1;
 
-        if self.cell_index >= Pager::get_leaf_node_cells_num(node) {
+        if self.cell_index >= Pager::get_leaf_node_num_cells(node) {
             let next_page_index = Pager::get_leaf_node_next_leaf(node);
             if next_page_index == 0 {
                 /* This was rightmost leaf */
@@ -61,7 +61,7 @@ impl<'a> Cursor<'a> {
 
     pub(crate) fn insert_row(&mut self, key: usize, row: &Row) {
         let page = self.table.get_pager().get_page_or_create(self.page_index);
-        let num_cells = Pager::get_leaf_node_cells_num(page);
+        let num_cells = Pager::get_leaf_node_num_cells(page);
 
         if num_cells >= LEAF_NODE_MAX_CELLS {
             self.split_and_insert(key, row);
@@ -70,6 +70,17 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    fn insert(&mut self, page: *mut u8, num_cells: usize, key: usize, row: &Row) {
+        if self.cell_index < num_cells {
+            copy(Pager::leaf_node_cell(page, self.cell_index),
+                 Pager::leaf_node_cell(page, self.cell_index + 1),
+                 LEAF_NODE_CELL_SIZE * (num_cells - self.cell_index))
+        }
+        Pager::set_leaf_node_cell_key(page, self.cell_index, key);
+        Pager::increment_leaf_node_cells_num(page);
+        self.table.get_pager().mark_page_as_updated(self.page_index);
+        row.serialize_row(self.cursor_value());
+    }
 
     fn split_and_insert(&mut self, key: usize, row: &Row) {
         /*
