@@ -5,8 +5,8 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
-use crate::storage_engine::config::DATA_FOLDER;
-use crate::storage_engine::core::{Row, Table};
+use crate::storage_engine::config::{BOOLEAN_SIZE, DATA_FOLDER, FLOAT_SIZE, INTEGER_SIZE};
+use crate::storage_engine::core::{Row, BtreeTable};
 use crate::utils::utils::is_folder_empty;
 
 pub(crate) trait Printable {
@@ -171,7 +171,7 @@ impl WhereExpr {
         }
     }
 
-    fn execute(&self, table: &mut Table) -> Result<HashSet<Row>, String> {
+    fn execute(&self, table: &mut BtreeTable) -> Result<HashSet<Row>, String> {
         let mut outer_set = HashSet::<Row>::new();
         for (op, cluster) in &self.condition_exprs {
             let set = Self::find_rows(cluster, table)?;
@@ -183,7 +183,7 @@ impl WhereExpr {
         Ok(outer_set)
     }
 
-    fn find_rows(condition_cluster: &ConditionCluster, table: &mut Table) -> Result<HashSet<Row>, String> {
+    fn find_rows(condition_cluster: &ConditionCluster, table: &mut BtreeTable) -> Result<HashSet<Row>, String> {
         let mut set: HashSet<Row> = HashSet::<Row>::new();
         for condition in &condition_cluster.conditions {
             let result = table.table_find_by_value(&condition.field, &condition.operator, &condition.value)?;
@@ -364,7 +364,7 @@ impl Operator {
             LT => { a < b }
             LTE => { a <= b }
             IN(negative) => {
-                if let Value::Array(vec) = b {
+                if let Value::ARRAY(vec) = b {
                     vec.contains(&a) ^ negative
                 } else {
                     false
@@ -412,24 +412,24 @@ impl TryFrom<String> for Operator {
 
 #[derive(Debug)]
 pub(crate) enum Value {
-    Integer(i32),
-    Float(f32),
-    Boolean(bool),
-    String(String),
-    Array(Vec<Value>),
+    INTEGER(i32),
+    FLOAT(f32),
+    BOOLEAN(bool),
+    STRING(String),
+    ARRAY(Vec<Value>),
     SelectStmt(SelectStmt),
 }
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match self {
-            Value::Integer(i) => { *i == other.unwrap_into_int().unwrap() }
-            Value::Float(f) => { *f == other.unwrap_into_float().unwrap() }
-            Value::Boolean(b) => { *b == other.unwrap_into_bool().unwrap() }
-            Value::String(s) => {
+            Value::INTEGER(i) => { *i == other.unwrap_into_int().unwrap() }
+            Value::FLOAT(f) => { *f == other.unwrap_into_float().unwrap() }
+            Value::BOOLEAN(b) => { *b == other.unwrap_into_bool().unwrap() }
+            Value::STRING(s) => {
                 s == other.unwrap_as_string().unwrap()
             }
-            Value::Array(a) => { a == other.unwrap_as_array().unwrap() }
+            Value::ARRAY(a) => { a == other.unwrap_as_array().unwrap() }
             Value::SelectStmt(s) => { other.is_select_stmt() }
         }
     }
@@ -438,11 +438,11 @@ impl PartialEq for Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self {
-            Value::Integer(i) => { i.partial_cmp(&other.unwrap_into_int().unwrap()) }
-            Value::Float(f) => { f.partial_cmp(&other.unwrap_into_float().unwrap()) }
-            Value::Boolean(b) => { b.partial_cmp(&other.unwrap_into_bool().unwrap()) }
-            Value::String(s) => { s.partial_cmp(&other.unwrap_as_string().unwrap()) }
-            Value::Array(a) => { None }
+            Value::INTEGER(i) => { i.partial_cmp(&other.unwrap_into_int().unwrap()) }
+            Value::FLOAT(f) => { f.partial_cmp(&other.unwrap_into_float().unwrap()) }
+            Value::BOOLEAN(b) => { b.partial_cmp(&other.unwrap_into_bool().unwrap()) }
+            Value::STRING(s) => { s.partial_cmp(&other.unwrap_as_string().unwrap()) }
+            Value::ARRAY(a) => { None }
             Value::SelectStmt(s) => { None }
         }
     }
@@ -451,19 +451,19 @@ impl PartialOrd for Value {
 impl Value {
     pub(crate) fn are_same_variant(a: &Value, b: &Value) -> bool {
         match (a, b) {
-            (Value::Integer(_), Value::Integer(_)) => {
+            (Value::INTEGER(_), Value::INTEGER(_)) => {
                 true
             }
-            (Value::Float(_), Value::Float(_)) => {
+            (Value::FLOAT(_), Value::FLOAT(_)) => {
                 true
             }
-            (Value::String(_), Value::String(_)) => {
+            (Value::STRING(_), Value::STRING(_)) => {
                 true
             }
-            (Value::Array(_), Value::Array(_)) => {
+            (Value::ARRAY(_), Value::ARRAY(_)) => {
                 true
             }
-            (Value::Boolean(_), Value::Boolean(_)) => {
+            (Value::BOOLEAN(_), Value::BOOLEAN(_)) => {
                 true
             }
             (Value::SelectStmt(_), Value::SelectStmt(_)) => {
@@ -477,35 +477,35 @@ impl Value {
 
     pub fn unwrap_into_int(&self) -> Result<i32, &str> {
         match self {
-            Value::Integer(v) => Ok(*v),
+            Value::INTEGER(v) => Ok(*v),
             _ => Err("Current Value is not an Integer.")
         }
     }
 
     pub fn unwrap_into_float(&self) -> Result<f32, &str> {
         match self {
-            Value::Float(v) => Ok(*v),
+            Value::FLOAT(v) => Ok(*v),
             _ => Err("Current Value is not a Float.")
         }
     }
 
     pub fn unwrap_as_string(&self) -> Result<&String, &str> {
         match self {
-            Value::String(v) => Ok(v),
+            Value::STRING(v) => Ok(v),
             _ => Err("Current Value is not a String.")
         }
     }
 
     pub fn unwrap_as_array(&self) -> Result<&Vec<Value>, &str> {
         match self {
-            Value::Array(v) => Ok(v),
+            Value::ARRAY(v) => Ok(v),
             _ => Err("Current Value is not an Array.")
         }
     }
 
     pub fn unwrap_into_bool(&self) -> Result<bool, &str> {
         match self {
-            Value::Boolean(v) => Ok(*v),
+            Value::BOOLEAN(v) => Ok(*v),
             _ => Err("Current Value is not a Boolean.")
         }
     }
@@ -542,7 +542,16 @@ impl DataType {
             0b0000_0001 => {Ok(DataType::INTEGER)}
             0b0000_0010 => {Ok(DataType::FLOAT)}
             0b0000_0011 => {Ok(DataType::BOOLEAN)}
-            _ => {Err(format!("Unkown bit code {}", bit_code))}
+            _ => {Err(format!("Unknown bit code {}", bit_code))}
+        }
+    }
+
+    pub fn get_size(&self) -> usize {
+        match self {
+            DataType::TEXT(size) => {*size}
+            DataType::INTEGER => {INTEGER_SIZE}
+            DataType::FLOAT => {FLOAT_SIZE}
+            DataType::BOOLEAN => {BOOLEAN_SIZE}
         }
     }
 }
