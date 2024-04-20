@@ -1,4 +1,5 @@
-use crate::storage_engine::core::{BtreePager, Row, Table};
+use crate::storage_engine::tables::{Table};
+use crate::storage_engine::common::{Row};
 
 pub struct Cursor<'a> {
     table: &'a mut dyn Table,

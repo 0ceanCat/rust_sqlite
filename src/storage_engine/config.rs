@@ -93,8 +93,6 @@ pub const INVALID_PAGE_NUM: usize = u32::MAX as usize;
 metadata file structure
 */
 pub const FIELD_NUMBER_SIZE: usize = 2;
-pub const FIELD_TYPE_PRIMARY: usize = 1;
-pub const FIELD_NAME_SIZE: usize = 64;
 /*
 1 byte for field data type + if it is primary
 00000001
@@ -105,6 +103,8 @@ the following 2 bits for data
 10 -> float
 11 -> boolean
  */
+pub const FIELD_TYPE_PRIMARY: usize = 1;
+pub const FIELD_NAME_SIZE: usize = 64;
 
 
 // by default, Text can have at max 255 bytes.
@@ -120,7 +120,6 @@ pub const BOOLEAN_SIZE: usize = 1;
 pub const DATA_FOLDER: &str = "./data";
 
 
-// Sequential Table Header
-pub const ROOT_FLAG: usize = 1;
-pub const SEQUENTIAL_ROW_SIZE: usize = 4;
+// Sequential Page Header
 pub const SEQUENTIAL_CELLS_NUM_SIZE: usize = 4;
+pub const SEQUENTIAL_NODE_BODY_OFFSET: usize = SEQUENTIAL_CELLS_NUM_SIZE;

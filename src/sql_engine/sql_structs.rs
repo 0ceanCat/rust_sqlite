@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 use crate::storage_engine::config::{BOOLEAN_SIZE, DATA_FOLDER, FLOAT_SIZE, INTEGER_SIZE, TEXT_DEFAULT_SIZE};
-use crate::storage_engine::core::{Row, BtreeTable, Table};
+use crate::storage_engine::common::{Row};
+use crate::storage_engine::tables::{BtreeTable, Table};
 use crate::utils::utils::{is_folder_empty, u8_array_to_string};
 
 pub(crate) trait Printable {
