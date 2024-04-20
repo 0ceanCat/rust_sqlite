@@ -1,3 +1,5 @@
+extern crate core;
+
 mod storage_engine;
 mod sql_engine;
 mod utils;

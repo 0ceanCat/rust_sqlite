@@ -5,12 +5,12 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::windows::fs::FileExt;
 use std::process::{exit};
 use std::{fs, ptr};
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use crate::build_path;
 use crate::sql_engine::sql_structs::{ConditionExpr, DataType, FieldDefinition, Operator, Value};
-use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::utils::utils::{copy, indent, u8_array_to_string};
 use crate::storage_engine::config::*;
 use crate::storage_engine::cursor::Cursor;
@@ -27,8 +27,8 @@ impl ToU8 for bool {
 }
 
 pub struct TableManager {
-    tables: HashMap<String, BtreeTable>,
-    metadata: HashMap<String, HashMap<String, FieldMetadata>>,
+    tables: HashMap<String, Box<dyn Table>>,
+    metadata: HashMap<String, TableStructureMetadata>,
 }
 
 impl TableManager {
@@ -39,34 +39,36 @@ impl TableManager {
         }
     }
 
-    pub fn get_or_load_table(&mut self, path: &Path) -> &BtreeTable {
+    pub fn get_or_load_table(&mut self, table_name: &str, path: &Path) -> Result<&mut Box<dyn Table>, String> {
         let path_str = String::from(path.to_str().unwrap());
         if !self.tables.contains_key(&path_str) {
-            let table = BtreeTable::new(path_str.as_str());
-            self.tables.insert(path_str.clone(), table);
+            let table = BtreeTable::new(path_str.as_str(), self.get_table_metadata(table_name)?)?;
+            self.tables.insert(path_str.clone(), Box::new(table));
         }
 
-        self.tables.get_mut(&path_str).unwrap()
+        Ok(self.tables.get_mut(&path_str).unwrap())
     }
 
     pub fn is_field_of_table(&mut self, table_name: &str, field_name: &str) -> bool {
-        self.get_metadata(table_name, field_name).is_ok()
+        self.get_field_metadata(table_name, field_name).is_ok()
     }
 
-    pub fn get_metadata(&mut self, table_name: &str, field_name: &str) -> Result<&FieldMetadata, String> {
+    pub fn get_field_metadata(&mut self, table_name: &str, field_name: &str) -> Result<&FieldMetadata, String> {
         let map = self.get_or_load_metadata(table_name)?;
 
-        match map.get(field_name) {
-            None => { Err(format!("Field {} does not exist in table {}.", field_name, table_name)) }
-            Some(meta) => { Ok(meta) }
-        }
+        map.get_field_metadata(field_name)
     }
 
-    fn get_or_load_metadata(&mut self, table_name: &str) -> Result<&HashMap<String, FieldMetadata>, String> {
+    pub fn get_table_metadata(&mut self, table_name: &str) -> Result<&TableStructureMetadata, String> {
+        let map = self.get_or_load_metadata(table_name)?;
+        Ok(map)
+    }
+
+    fn get_or_load_metadata(&mut self, table_name: &str) -> Result<&TableStructureMetadata, String> {
         let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
         if !self.metadata.contains_key(table_name) {
             let metadata = unsafe { Self::load_metadata(&path)? };
-            self.metadata.insert(String::from(table_name), metadata);
+            self.metadata.insert(String::from(table_name), TableStructureMetadata::new(table_name, metadata));
         }
 
         Ok(self.metadata.get(table_name).unwrap())
@@ -95,8 +97,8 @@ impl TableManager {
         }
 
         match File::create(frm_path) {
-            Ok(file) => {
-                Self::write_metadata(&file, table_name, field_definitions)
+            Ok(mut file) => {
+                Self::write_metadata(&mut file, table_name, field_definitions)
             }
             Err(_) => {
                 return Err(String::from("Can not open create table."));
@@ -104,7 +106,7 @@ impl TableManager {
         }
     }
 
-    fn write_metadata(fd: &File, table_name: &str, field_definitions: &Vec<FieldDefinition>) -> Result<(), String> {
+    fn write_metadata(fd: &mut File, table_name: &str, field_definitions: &Vec<FieldDefinition>) -> Result<(), String> {
         let mut total_size = 0;
         total_size += FIELD_NUMBER_SIZE;
         total_size += field_definitions.len() * FIELD_NAME_SIZE;
@@ -114,16 +116,17 @@ impl TableManager {
             total_size += field_definition.data_type.get_size();
         });
 
-        let buf = Vec::<u8>::with_capacity(total_size).as_mut_ptr();
+        let mut vec = Vec::<u8>::with_capacity(total_size);
+        let buf = vec.as_mut_ptr();
         let mut buf_pointer = 0; // pointer that points to the position where we should start reading
 
         copy(field_definitions.len() as *const u8, buf, FIELD_NUMBER_SIZE);
         buf_pointer += FIELD_NUMBER_SIZE;
 
         field_definitions.iter().for_each(|field_definition| unsafe {
-            copy(field_definition.field.as_ptr(), buf.add(buf_pointer), FIELD_NAME_SIZE);
+            copy(field_definition.field_name.as_ptr(), buf.add(buf_pointer), FIELD_NAME_SIZE);
             buf_pointer += FIELD_NAME_SIZE;
-            let mut data_type_primary: u8 = (field_definition.data_type.to_bit_code() << 1) | field_definition.is_primary_key.to_u8();
+            let data_type_primary: u8 = (field_definition.data_type.to_bit_code() << 1) | field_definition.is_primary_key.to_u8();
             copy(data_type_primary as *mut u8, buf.add(buf_pointer), FIELD_TYPE_PRIMARY);
             buf_pointer += FIELD_TYPE_PRIMARY;
             match field_definition.data_type {
@@ -134,6 +137,14 @@ impl TableManager {
                 _ => {}
             }
         });
+
+        unsafe {
+            vec.set_len(total_size);
+        }
+
+        if fd.write(vec.as_slice()).is_err() {
+            return Err(format!("Can not write metadata for table {}!", table_name));
+        };
         Ok(())
     }
 
@@ -162,7 +173,7 @@ impl TableManager {
 
             let data_type = match DataType::from_bit_code(data_type_bit_code)? {
                 DataType::TEXT(_) => {
-                    copy(ptr.add(metadata_pointer), field_type_primary as *const usize as *mut u8, TEXT_SIZE);
+                    copy(ptr.add(metadata_pointer), size as *const usize as *mut u8, TEXT_SIZE);
                     metadata_pointer += TEXT_SIZE;
                     DataType::TEXT(size)
                 }
@@ -217,53 +228,30 @@ impl TableManager {
     }
 }
 
-pub struct Pager {
+pub struct BtreePager {
     pages: [Option<Page>; TABLE_MAX_PAGES],
     updated: [bool; TABLE_MAX_PAGES],
     fd: File,
     size: usize,
     total_pages: usize,
+    btree_leaf_node_body_layout: BtreeLeafNodeBodyLayout,
 }
 
-impl Pager {
-    pub(crate) fn open(db_file: &str) -> Pager {
-        let r = OpenOptions::new().create(true).read(true).write(true).open(db_file);
-
-        match r {
-            Ok(file) => {
-                let size = file.metadata().unwrap().len() as usize;
-                if size % PAGE_SIZE != 0 {
-                    println!("Db file is not a whole number of pages. Corrupt file.");
-                    exit(1);
-                }
-                let mut total_pages = size / PAGE_SIZE;
-                Pager {
-                    pages: [None; TABLE_MAX_PAGES],
-                    fd: file,
-                    updated: [false; TABLE_MAX_PAGES],
-                    size,
-                    total_pages,
-                }
-            }
-            Err(_) => {
-                panic!("Can not open user file!")
-            }
-        }
-    }
-
-    pub(crate) fn open_from(file: File) -> Pager {
+impl BtreePager {
+    pub(crate) fn open(key_size: usize, row_size: usize, file: File) -> BtreePager {
         let size = file.metadata().unwrap().len() as usize;
         if size % PAGE_SIZE != 0 {
             println!("Db file is not a whole number of pages. Corrupt file.");
             exit(1);
         }
         let mut total_pages = size / PAGE_SIZE;
-        Pager {
+        BtreePager {
             pages: [None; TABLE_MAX_PAGES],
             fd: file,
             updated: [false; TABLE_MAX_PAGES],
             size,
             total_pages,
+            btree_leaf_node_body_layout: BtreeLeafNodeBodyLayout::new(key_size, row_size),
         }
     }
 
@@ -305,7 +293,7 @@ impl Pager {
         self.pages[page_index].as_mut().unwrap().as_mut_ptr()
     }
 
-    pub(crate) fn get_leaf_node_num_cells(page: *mut u8) -> usize {
+    pub(crate) fn get_leaf_node_num_cells(page: *const u8) -> usize {
         unsafe {
             let page_ptr = page.add(LEAF_NODE_NUM_CELLS_OFFSET);
             let cells_num: usize = 0;
@@ -346,37 +334,34 @@ impl Pager {
         }
     }
 
-    pub(crate) fn get_leaf_node_cell_key(page: *mut u8, cell_index: usize, key_type: &DataType) -> Value {
+    pub(crate) fn get_leaf_node_cell_key(&self, page: *const u8, cell_index: usize, key_type: &DataType) -> Value {
         unsafe {
-            Self::read_key(key_type, page.add(LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE))
+            Value::from_ptr(key_type, page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.LEAF_NODE_CELL_SIZE))
         }
     }
 
-    pub(crate) fn set_leaf_node_cell_key(page: *mut u8, cell_index: usize, key: usize) {
+    pub(crate) fn set_leaf_node_cell_key(&self, page: *mut u8, cell_index: usize, key_size: usize, key: &Value) {
         unsafe {
-            ptr::copy_nonoverlapping(
-                &key as *const usize as *mut u8,
-                page.add(LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE),
-                LEAF_NODE_KEY_SIZE,
-            );
+            let dst = page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.LEAF_NODE_CELL_SIZE);
+            Self::set_key(key_size, key, dst)
         }
     }
 
-    pub(crate) fn leaf_node_cell(page: *mut u8, cell_index: usize) -> *mut u8 {
+    pub(crate) fn leaf_node_cell(&self, page: *mut u8, cell_index: usize) -> *mut u8 {
         unsafe {
-            let page_ptr = page.add(LEAF_NODE_HEADER_SIZE + cell_index * LEAF_NODE_CELL_SIZE);
+            let page_ptr = page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.LEAF_NODE_CELL_SIZE);
             page_ptr
         }
     }
 
-    pub(crate) fn leaf_node_value(page: *mut u8, cell_index: usize) -> *mut u8 {
-        let ptr = Self::leaf_node_cell(page, cell_index);
+    pub(crate) fn get_leaf_node_value(&self, page: *mut u8, cell_index: usize) -> *mut u8 {
+        let ptr = self.leaf_node_cell(page, cell_index);
         unsafe {
-            ptr.add(LEAF_NODE_VALUE_OFFSET)
+            ptr.add(self.btree_leaf_node_body_layout.LEAF_NODE_VALUE_OFFSET)
         }
     }
 
-    pub(crate) fn get_node_type(ptr: *mut u8) -> NodeType {
+    pub(crate) fn get_node_type(ptr: *const u8) -> NodeType {
         unsafe {
             let node_type: u8 = 0;
 
@@ -423,13 +408,13 @@ impl Pager {
         }
     }
 
-    pub(crate) fn internal_node_cell(page: *mut u8, cell_index: usize) -> *mut u8 {
+    pub(crate) fn get_internal_node_cell(page: *mut u8, cell_index: usize) -> *mut u8 {
         unsafe {
-            page.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE)
+            page.add(INTERNAL_NODE_BODY_OFFSET + cell_index * INTERNAL_NODE_CELL_SIZE)
         }
     }
 
-    pub fn get_internal_node_num_keys(node: *mut u8) -> usize {
+    pub fn get_internal_node_num_keys(node: *const u8) -> usize {
         unsafe {
             let num: usize = 0;
             ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
@@ -452,31 +437,31 @@ impl Pager {
         each page can have multiple child cells
     */
     pub fn set_internal_node_child(node: *mut u8, child_index: usize, value: usize) {
-        let num_keys = Pager::get_internal_node_num_keys(node);
+        let num_keys = BtreePager::get_internal_node_num_keys(node);
         if child_index > num_keys {
             println!("Tried to access child_num {} > num_keys {}", child_index, num_keys);
             exit(1);
         } else if child_index == num_keys {
-            Pager::set_internal_node_right_child(node, value);
+            BtreePager::set_internal_node_right_child(node, value);
         } else {
-            Pager::set_internal_node_cell_child(node, child_index, value);
+            BtreePager::set_internal_node_cell_child(node, child_index, value);
         }
     }
 
-    pub fn get_internal_node_child(node: *mut u8, child_index: usize) -> usize {
-        let num_keys = Pager::get_internal_node_num_keys(node);
+    pub fn get_internal_node_child(node: *const u8, child_index: usize) -> usize {
+        let num_keys = BtreePager::get_internal_node_num_keys(node);
         if child_index > num_keys {
             println!("Tried to access child_num {} > num_keys {}", child_index, num_keys);
             exit(1);
         } else if child_index == num_keys {
-            let right_child = Pager::get_internal_node_right_child(node);
+            let right_child = BtreePager::get_internal_node_right_child(node);
             if right_child == INVALID_PAGE_NUM {
                 println!("Tried to access right child of node, but was invalid page");
                 exit(1);
             }
             right_child
         } else {
-            let right_child = Pager::get_internal_node_cell_child(node, child_index);
+            let right_child = BtreePager::get_internal_node_cell_child(node, child_index);
             if right_child == INVALID_PAGE_NUM {
                 println!("Tried to access child {} of node, but was invalid page", child_index);
                 exit(1);
@@ -485,7 +470,7 @@ impl Pager {
         }
     }
 
-    pub fn get_internal_node_right_child(node: *mut u8) -> usize {
+    pub fn get_internal_node_right_child(node: *const u8) -> usize {
         unsafe {
             let right_child_index: usize = 0;
             ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
@@ -506,57 +491,32 @@ impl Pager {
     pub fn set_internal_node_cell_child(node: *mut u8, child_index: usize, key: usize) {
         unsafe {
             ptr::copy_nonoverlapping(&key as *const usize as *mut u8,
-                                     node.add(INTERNAL_NODE_HEADER_SIZE + child_index * INTERNAL_NODE_CELL_SIZE),
+                                     node.add(INTERNAL_NODE_BODY_OFFSET + child_index * INTERNAL_NODE_CELL_SIZE),
                                      INTERNAL_NODE_CHILD_SIZE);
         }
     }
 
-    pub fn get_internal_node_cell_child(node: *mut u8, child_index: usize) -> usize {
+    pub fn get_internal_node_cell_child(node: *const u8, child_index: usize) -> usize {
         unsafe {
             let key: usize = 0;
             ptr::copy_nonoverlapping(
-                node.add(INTERNAL_NODE_HEADER_SIZE + child_index * INTERNAL_NODE_CELL_SIZE),
+                node.add(INTERNAL_NODE_BODY_OFFSET + child_index * INTERNAL_NODE_CELL_SIZE),
                 &key as *const usize as *mut u8,
                 INTERNAL_NODE_CHILD_SIZE);
             key
         }
     }
 
-    pub fn get_internal_node_cell_key(node: *mut u8, cell_index: usize, key_type: &DataType) -> Value {
+    pub fn get_internal_node_cell_key(node: *const u8, cell_index: usize, key_type: &DataType) -> Value {
         unsafe {
-            let src = node.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CHILD_SIZE);
-            Self::read_key(key_type, src)
-        }
-    }
-
-    unsafe fn read_key(key_type: &DataType, src: *mut u8) -> Value {
-        match key_type {
-            DataType::TEXT(size) => {
-                let mut bytes = Vec::<u8>::with_capacity(*size);
-                ptr::copy_nonoverlapping(src, bytes.as_mut_ptr(), *size);
-                Value::STRING(u8_array_to_string(bytes.as_slice()))
-            }
-            DataType::INTEGER => {
-                let key: i32 = 0;
-                ptr::copy_nonoverlapping(src, &key as *const i32 as *mut u8, key_type.get_size());
-                Value::INTEGER(key)
-            }
-            DataType::FLOAT => {
-                let key: f32 = 0.0;
-                ptr::copy_nonoverlapping(src, &key as *const f32 as *mut u8, key_type.get_size());
-                Value::FLOAT(key)
-            }
-            DataType::BOOLEAN => {
-                let key: bool = false;
-                ptr::copy_nonoverlapping(src, &key as *const bool as *mut u8, key_type.get_size());
-                Value::BOOLEAN(key)
-            }
+            let src = node.add(INTERNAL_NODE_BODY_OFFSET + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CHILD_SIZE);
+            Value::from_ptr(key_type, src)
         }
     }
 
     pub fn set_internal_node_cell_key(node: *mut u8, cell_index: usize, key_size: usize, key: &Value) {
         unsafe {
-            let dst = node.add(INTERNAL_NODE_HEADER_SIZE + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CHILD_SIZE);
+            let dst = node.add(INTERNAL_NODE_BODY_OFFSET + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CHILD_SIZE);
             Self::set_key(key_size, key, dst)
         }
     }
@@ -589,7 +549,7 @@ impl Pager {
         }
     }
 
-    pub(crate) fn get_leaf_node_next_leaf(node: *mut u8) -> usize {
+    pub(crate) fn get_leaf_node_next_leaf(node: *const u8) -> usize {
         unsafe {
             let next_leaf: usize = 0;
             ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
@@ -600,14 +560,14 @@ impl Pager {
     }
 
 
-    pub fn get_node_biggest_key(&mut self, node: *mut u8, key_type: &DataType) -> Value {
-        match Pager::get_node_type(node) {
+    pub fn get_node_biggest_key(&mut self, node: *const u8, key_type: &DataType) -> Value {
+        match BtreePager::get_node_type(node) {
             NodeType::Internal => {
-                let right_child = self.get_page_or_create(Pager::get_internal_node_right_child(node));
+                let right_child = self.get_page_or_create(BtreePager::get_internal_node_right_child(node));
                 self.get_node_biggest_key(right_child, key_type)
             }
             NodeType::Leaf => {
-                Pager::get_leaf_node_cell_key(node, Pager::get_leaf_node_num_cells(node) - 1, key_type)
+                self.get_leaf_node_cell_key(node, BtreePager::get_leaf_node_num_cells(node) - 1, key_type)
             }
         }
     }
@@ -639,22 +599,22 @@ impl Pager {
     }
 
     pub(crate) fn initialize_leaf_node(node: *mut u8) {
-        Pager::set_node_type(node, NodeType::Leaf);
-        Pager::set_root_node(node, false);
-        Pager::set_leaf_node_cells_num(node, 0);
-        Pager::set_leaf_node_next_leaf(node, 0);
+        BtreePager::set_node_type(node, NodeType::Leaf);
+        BtreePager::set_root_node(node, false);
+        BtreePager::set_leaf_node_cells_num(node, 0);
+        BtreePager::set_leaf_node_next_leaf(node, 0);
     }
 
     pub(crate) fn initialize_internal_node(node: *mut u8) {
-        Pager::set_node_type(node, NodeType::Internal);
-        Pager::set_root_node(node, false);
-        Pager::set_internal_node_num_keys(node, 0);
+        BtreePager::set_node_type(node, NodeType::Internal);
+        BtreePager::set_root_node(node, false);
+        BtreePager::set_internal_node_num_keys(node, 0);
         /*
          Necessary because the root page number is 0; by not initializing an internal
          node's right child to an invalid page number when initializing the node, we may
          end up with 0 as the node's right child, which makes the node a parent of the root
          */
-        Pager::set_internal_node_right_child(node, INVALID_PAGE_NUM);
+        BtreePager::set_internal_node_right_child(node, INVALID_PAGE_NUM);
     }
 
     pub fn set_parent(node: *mut u8, parent_index: usize) {
@@ -667,7 +627,7 @@ impl Pager {
         }
     }
 
-    pub fn get_parent(node: *mut u8) -> usize {
+    pub fn get_parent(node: *const u8) -> usize {
         unsafe {
             let parent_index: usize = 0;
             ptr::copy_nonoverlapping(
@@ -680,20 +640,38 @@ impl Pager {
     }
 }
 
+pub struct SequentialPager {
+    pages: [Option<Page>; TABLE_MAX_PAGES],
+    updated: [bool; TABLE_MAX_PAGES],
+    fd: File,
+    size: usize,
+    total_pages: usize,
+}
+
+impl SequentialPager {}
+
 pub trait Table {
     fn begin(&mut self) -> Cursor;
-    fn insert(&mut self, page_index: usize, cell_index: usize, row: Row);
-    fn find_by_condition(&mut self, condition_expr: ConditionExpr) -> Cursor;
+    fn insert(&mut self, page_index: usize, cell_index: usize, row: &Row);
+    fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Cursor;
     fn end(&mut self) -> Cursor;
     fn is_index_table(&self) -> bool;
+    fn get_row_size(&self) -> usize;
+    fn get_num_cells(&self, page_index: usize) -> usize;
+    fn get_next_page(&self, page_index: usize) -> usize;
+    fn get_row_value(&mut self, page_index: usize, cell_index: usize) -> *mut u8;
+    fn flush_to_disk(&self);
+    fn print_tree(&self, page_index: usize, cell_index: usize);
 }
 
 pub struct BtreeTable {
     pub root_page_index: usize,
-    pub pager: Pager,
+    pub pager: BtreePager,
     pub is_primary: bool,
     pub key_type: DataType,
     pub key_size: usize,
+    pub key_offset_in_row: usize,
+    pub row_size: usize,
 }
 
 impl Table for BtreeTable {
@@ -701,18 +679,18 @@ impl Table for BtreeTable {
         self.find_smallest_or_biggest_key(false)
     }
 
-    fn insert(&mut self, page_index: usize, cell_index: usize, row: Row) {
+    fn insert(&mut self, page_index: usize, cell_index: usize, row: &Row) {
         let page = self.pager.get_page_or_create(page_index);
-        let num_cells = Pager::get_leaf_node_num_cells(page);
+        let num_cells = BtreePager::get_leaf_node_num_cells(page);
 
-        if num_cells >= LEAF_NODE_MAX_CELLS {
-            self.split_and_insert(page_index, cell_index, row);
+        if num_cells >= self.pager.btree_leaf_node_body_layout.LEAF_NODE_MAX_CELLS {
+            self.split_and_insert(page_index, cell_index, &row);
         } else {
-            self.move_and_insert(page_index, cell_index, row);
+            self.move_and_insert(page_index, cell_index, &row);
         }
     }
 
-    fn find_by_condition(&mut self, condition_expr: ConditionExpr) -> Cursor {
+    fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Cursor {
         todo!()
     }
 
@@ -723,28 +701,85 @@ impl Table for BtreeTable {
     fn is_index_table(&self) -> bool {
         true
     }
+
+    fn get_row_size(&self) -> usize {
+        self.row_size
+    }
+
+    fn get_num_cells(&self, page_index: usize) -> usize {
+        BtreePager::get_leaf_node_num_cells(self.pager.get_page(page_index))
+    }
+
+    fn get_next_page(&self, page_index: usize) -> usize {
+        BtreePager::get_leaf_node_next_leaf(self.pager.get_page(page_index))
+    }
+
+    fn get_row_value(&mut self, page_index: usize, cell_index: usize) -> *mut u8 {
+        let page = self.pager.get_page_or_create(page_index);
+        self.pager.get_leaf_node_value(page, cell_index)
+    }
+
+    fn flush_to_disk(&self) {
+        todo!()
+    }
+
+    fn print_tree(&self, page_index: usize, cell_index: usize) {
+        todo!()
+    }
 }
 
 impl BtreeTable {
-    pub(crate) fn new(path: &str) -> BtreeTable {
-        let pager = Pager::open(path);
-        let mut pager = pager;
-        if pager.size == 0 {
-            let first_page = pager.get_page_or_create(0);
-            Pager::initialize_leaf_node(first_page);
-            Pager::set_root_node(first_page, true);
-        }
-        BtreeTable {
-            root_page_index: 0,
-            pager,
-            is_primary: false,
-            // TODO
-            key_type: DataType::INTEGER,
-            key_size: DataType::INTEGER.get_size(),
+    pub(crate) fn new(path: &str, table_metadata: &TableStructureMetadata) -> Result<BtreeTable, String> {
+        match OpenOptions::new().create(true).read(true).write(true).open(path) {
+            Ok(mut file) => {
+                let (is_primary, data_type, key_size, key_name) = Self::load_metadata(&mut file)?;
+                let pager = BtreePager::open(key_size, table_metadata.row_size, file);
+                let mut pager = pager;
+                if pager.size == 0 {
+                    let first_page = pager.get_page_or_create(0);
+                    BtreePager::initialize_leaf_node(first_page);
+                    BtreePager::set_root_node(first_page, true);
+                }
+                Ok(BtreeTable {
+                    root_page_index: 0,
+                    pager,
+                    is_primary,
+                    key_type: data_type,
+                    key_size,
+                    key_offset_in_row: table_metadata.get_field_metadata(&key_name)?.offset,
+                    row_size: table_metadata.row_size,
+                })
+            }
+            Err(_) => {
+                Err(format!("Can not open index data file of table {}!", table_metadata.table_name))
+            }
         }
     }
 
-    fn split_and_insert(&mut self, page_index: usize, cell_index: usize, row: Row) {
+    fn load_metadata(file: &mut File) -> Result<(bool, DataType, usize, String), String> {
+        let mut metadata: [u8; BTREE_METADATA_SIZE] = [0; BTREE_METADATA_SIZE];
+        file.read(&mut metadata);
+
+        let data_type_mask: u8 = 0b0000_0000;
+        let primary_mask: u8 = 0b0000_0001;
+        let field_type_primary: u8 = 0;
+
+        copy(metadata.as_ptr(), field_type_primary as *mut u8, INDEXED_FIELD_TYPE_PRIMARY);
+        let data_type_bit_code = (field_type_primary >> 1) | data_type_mask;
+        let is_primary = (field_type_primary & primary_mask) == 1;
+
+        let data_type = DataType::from_bit_code(data_type_bit_code)?;
+        let key_size: usize = 0;
+        let mut key_name: [u8; INDEXED_FIELD_NAME_SIZE] = [0; INDEXED_FIELD_NAME_SIZE];
+        unsafe {
+            copy(metadata.as_ptr().add(INDEXED_FIELD_SIZE_OFFSET), key_size as *const usize as *mut u8, INDEXED_FIELD_SIZE);
+            copy(metadata.as_ptr().add(INDEXED_FIELD_NAME_SIZE_OFFSET), key_name.as_mut_ptr(), INDEXED_FIELD_NAME_SIZE);
+        }
+        let key_name = u8_array_to_string(&key_name);
+        Ok((is_primary, data_type, key_size, key_name))
+    }
+
+    fn split_and_insert(&mut self, page_index: usize, cell_index: usize, row: &Row) {
         /*
          Create a new node and move half the cells over.
          Insert the new value in one of the two nodes.
@@ -754,80 +789,83 @@ impl BtreeTable {
         let old_biggest_key = self.pager.get_node_biggest_key(old_node, &self.key_type);
         let new_page_index = self.pager.get_unused_page_num();
         let new_node = self.pager.get_page_or_create(new_page_index);
-        Pager::initialize_leaf_node(new_node);
+        BtreePager::initialize_leaf_node(new_node);
 
-        Pager::set_parent(new_node, Pager::get_parent(old_node));
+        BtreePager::set_parent(new_node, BtreePager::get_parent(old_node.cast_const()));
 
-        Pager::set_leaf_node_next_leaf(new_node, Pager::get_leaf_node_next_leaf(old_node));
-        Pager::set_leaf_node_next_leaf(old_node, new_page_index);
+        BtreePager::set_leaf_node_next_leaf(new_node, BtreePager::get_leaf_node_next_leaf(old_node.cast_const()));
+        BtreePager::set_leaf_node_next_leaf(old_node, new_page_index);
 
         /*
           All existing keys plus new key should be divided
           evenly between old (left) and new (right) nodes.
           Starting from the right, move each key to correct position.
         */
-        for i in (0..=LEAF_NODE_MAX_CELLS).rev() {
+        for i in (0..=self.pager.btree_leaf_node_body_layout.LEAF_NODE_MAX_CELLS).rev() {
             let destination_node;
-            if i >= LEAF_NODE_LEFT_SPLIT_COUNT {
+            if i >= self.pager.btree_leaf_node_body_layout.LEAF_NODE_LEFT_SPLIT_COUNT {
                 // upper halves (right halves) will be stored in the new_node
                 destination_node = new_node;
             } else {
                 destination_node = old_node;
             }
             // index_within_node will always decrement until it arrives to 0, then destination_node will be switched to old_node
-            let index_within_node = i % LEAF_NODE_LEFT_SPLIT_COUNT;
-            let cell_pointer = Pager::leaf_node_cell(destination_node, index_within_node);
+            let index_within_node = i % self.pager.btree_leaf_node_body_layout.LEAF_NODE_LEFT_SPLIT_COUNT;
+            let cell_pointer = self.pager.leaf_node_cell(destination_node, index_within_node);
 
             if i == cell_index {
                 // when this code executes, the value in the cell_pointer was already moved to position i + 1, if cell_pointer is old_node
                 // if cell_pointer is new_node, position `index_within_node` is empty
-                Pager::set_leaf_node_cell_key(destination_node, index_within_node, row.key);
-                row.serialize_row(Pager::leaf_node_value(destination_node, index_within_node));
+                let key = row.read_key(&self.key_type, self.key_offset_in_row, self.key_size);
+                self.pager.set_leaf_node_cell_key(destination_node, index_within_node, self.key_size, &key);
+                row.serialize_row(self.pager.get_leaf_node_value(destination_node, index_within_node));
             } else if i > cell_index {
                 // copy a node from old_node tail (position i - 1), to destination_node (index_within_node)
-                copy(Pager::leaf_node_cell(old_node, i - 1), cell_pointer, LEAF_NODE_CELL_SIZE);
+                copy(self.pager.leaf_node_cell(old_node, i - 1), cell_pointer, self.pager.btree_leaf_node_body_layout.LEAF_NODE_CELL_SIZE);
             } else {
-                copy(Pager::leaf_node_cell(old_node, i), cell_pointer, LEAF_NODE_CELL_SIZE);
+                copy(self.pager.leaf_node_cell(old_node, i), cell_pointer, self.pager.btree_leaf_node_body_layout.LEAF_NODE_CELL_SIZE);
             }
         }
 
-        Pager::set_leaf_node_cells_num(old_node, LEAF_NODE_LEFT_SPLIT_COUNT);
-        Pager::set_leaf_node_cells_num(new_node, LEAF_NODE_RIGHT_SPLIT_COUNT);
+        BtreePager::set_leaf_node_cells_num(old_node, self.pager.btree_leaf_node_body_layout.LEAF_NODE_LEFT_SPLIT_COUNT);
+        BtreePager::set_leaf_node_cells_num(new_node, self.pager.btree_leaf_node_body_layout.LEAF_NODE_RIGHT_SPLIT_COUNT);
 
-        if Pager::is_root_node(old_node) {
+        if BtreePager::is_root_node(old_node) {
             self.create_new_root(new_page_index);
         } else {
-            let parent_page_index = Pager::get_parent(old_node);
+            let parent_page_index = BtreePager::get_parent(old_node.cast_const());
             let new_biggest = self.pager.get_node_biggest_key(old_node, &self.key_type);
             let parent_page = self.pager.get_page_or_create(parent_page_index);
 
             let old_key_cell_index = self.internal_node_find_child(parent_page, &old_biggest_key);
             // old_node is split and contains left halves rows (lower halves)
             // so it's necessary to replace old_biggest_key to new_biggest_key
-            Pager::set_internal_node_cell_key(parent_page, old_key_cell_index, self.key_size, &new_biggest);
+            BtreePager::set_internal_node_cell_key(parent_page, old_key_cell_index, self.key_size, &new_biggest);
             self.internal_node_insert(parent_page_index, new_page_index);
         }
     }
 
-    fn move_and_insert(&mut self, page_index: usize, cell_index: usize, row: Row) {
+    fn move_and_insert(&mut self, page_index: usize, cell_index: usize, row: &Row) {
         let page = self.pager.get_page_or_create(page_index);
-        let num_cells = Pager::get_leaf_node_num_cells(page);
+        let num_cells = BtreePager::get_leaf_node_num_cells(page);
         if cell_index < num_cells {
-            copy(Pager::leaf_node_cell(page, cell_index),
-                 Pager::leaf_node_cell(page, cell_index + 1),
-                 LEAF_NODE_CELL_SIZE * (num_cells - cell_index))
+            copy(self.pager.leaf_node_cell(page, cell_index),
+                 self.pager.leaf_node_cell(page, cell_index + 1),
+                 self.pager.btree_leaf_node_body_layout.LEAF_NODE_CELL_SIZE * (num_cells - cell_index))
         }
-        Pager::set_leaf_node_cell_key(page, cell_index, row.key);
-        Pager::increment_leaf_node_cells_num(page);
+        let key = row.read_key(&self.key_type, self.key_offset_in_row, self.key_size);
+        self.pager.set_leaf_node_cell_key(page, cell_index, self.key_size, &key);
+        BtreePager::increment_leaf_node_cells_num(page);
         self.pager.mark_page_as_updated(page_index);
-        row.serialize_row(Pager::leaf_node_value(page, cell_index));
+        row.serialize_row(self.pager.get_leaf_node_value(page, cell_index));
     }
 
     pub fn read_all(&mut self) -> Vec<Row> {
+        let row_size = self.row_size;
         let mut cursor = self.begin();
         let mut result = Vec::new();
         while !cursor.is_end() {
-            result.push(Row::deserialize_row(cursor.cursor_value()));
+            result.push(Row::deserialize_row(cursor.cursor_value(), row_size));
             cursor.cursor_advance();
         }
         result
@@ -859,13 +897,13 @@ impl BtreeTable {
 
     fn leaf_node_find(&mut self, page_index: usize, key: &Value) -> Cursor {
         let node = self.pager.get_page_or_create(page_index);
-        let cells_num = Pager::get_leaf_node_num_cells(node);
+        let cells_num = BtreePager::get_leaf_node_num_cells(node);
 
         let mut min_index = 0;
         let mut right = cells_num;
         while right != min_index {
             let index = (min_index + right) / 2;
-            let key_at_index = Pager::get_leaf_node_cell_key(node, index, &self.key_type);
+            let key_at_index = self.pager.get_leaf_node_cell_key(node, index, &self.key_type);
             if *key == key_at_index {
                 return Cursor::at(self, page_index, index);
             }
@@ -882,22 +920,22 @@ impl BtreeTable {
     fn leaf_node_find_smallest_or_biggest(&mut self, page_index: usize, biggest: bool) -> Cursor {
         let mut cell_index = 0;
         if biggest {
-            cell_index = Pager::get_leaf_node_num_cells(self.pager.get_page_or_create(page_index))
+            cell_index = BtreePager::get_leaf_node_num_cells(self.pager.get_page_or_create(page_index))
         }
         Cursor::at(self, page_index, cell_index)
     }
 
-    pub fn internal_node_find_child(&mut self, node: *mut u8, key: &Value) -> usize {
+    pub fn internal_node_find_child(&mut self, node: *const u8, key: &Value) -> usize {
         /*
           Return the index of the child which should contain
           the given key.
         */
-        let num_keys = Pager::get_internal_node_num_keys(node);
+        let num_keys = BtreePager::get_internal_node_num_keys(node);
         let mut min_index = 0;
         let mut max_index = num_keys;
         while max_index != min_index {
             let index = (min_index + max_index) / 2;
-            let key_at_index = Pager::get_internal_node_cell_key(node, index, &self.key_type);
+            let key_at_index = BtreePager::get_internal_node_cell_key(node, index, &self.key_type);
             if *key <= key_at_index {
                 max_index = index;
             } else {
@@ -916,13 +954,13 @@ impl BtreeTable {
         let mut key_index: usize = 0;
 
         if biggest {
-            key_index = Pager::get_internal_node_num_keys(node) - 1;
+            key_index = BtreePager::get_internal_node_num_keys(node) - 1;
         }
 
-        let child_index = Pager::get_internal_node_child(node, key_index);
+        let child_index = BtreePager::get_internal_node_child(node, key_index);
         let child = self.pager.get_page_or_create(child_index);
 
-        match Pager::get_node_type(child) {
+        match BtreePager::get_node_type(child) {
             NodeType::Leaf => {
                 self.leaf_node_find_smallest_or_biggest(child_index, biggest)
             }
@@ -935,25 +973,15 @@ impl BtreeTable {
     fn internal_node_find(&mut self, page_index: usize, key: &Value) -> Cursor {
         let node = self.pager.get_page_or_create(page_index);
         let cell_index = self.internal_node_find_child(node, key);
-        let child_index = Pager::get_internal_node_child(node, cell_index);
+        let child_index = BtreePager::get_internal_node_child(node, cell_index);
         let child = self.pager.get_page_or_create(child_index);
-        match Pager::get_node_type(child) {
+        match BtreePager::get_node_type(child) {
             NodeType::Leaf => {
                 self.leaf_node_find(child_index, key)
             }
             NodeType::Internal => {
                 self.internal_node_find(child_index, key)
             }
-        }
-    }
-
-    pub(crate) fn row_slot(&mut self, row_num: usize) -> *mut u8 {
-        let page_num = row_num / ROWS_PER_PAGE;
-        let page = self.pager.get_page_or_create(page_num);
-        let row_offset = row_num % ROWS_PER_PAGE;
-        let byte_offset = row_offset * ROW_SIZE;
-        unsafe {
-            page.add(byte_offset)
         }
     }
 
@@ -978,42 +1006,42 @@ impl BtreeTable {
         let left_child_page_num = self.pager.get_unused_page_num();
         let left_child = self.pager.get_page_or_create(left_child_page_num);
 
-        if let NodeType::Internal = Pager::get_node_type(root) {
-            Pager::initialize_internal_node(right_child);
-            Pager::initialize_internal_node(left_child);
+        if let NodeType::Internal = BtreePager::get_node_type(root) {
+            BtreePager::initialize_internal_node(right_child);
+            BtreePager::initialize_internal_node(left_child);
         }
 
         /* Left child has data copied from old root */
         unsafe {
             ptr::copy_nonoverlapping(root, left_child, PAGE_SIZE);
-            Pager::set_root_node(left_child, false)
+            BtreePager::set_root_node(left_child, false)
         };
 
-        if let NodeType::Internal = Pager::get_node_type(left_child) {
+        if let NodeType::Internal = BtreePager::get_node_type(left_child) {
             let mut child: *mut u8;
-            let num_keys = Pager::get_internal_node_num_keys(left_child);
+            let num_keys = BtreePager::get_internal_node_num_keys(left_child);
             for i in 0..num_keys {
-                child = self.pager.get_page_or_create(Pager::get_internal_node_child(left_child, i));
-                Pager::set_parent(child, left_child_page_num);
+                child = self.pager.get_page_or_create(BtreePager::get_internal_node_child(left_child, i));
+                BtreePager::set_parent(child, left_child_page_num);
             }
-            child = self.pager.get_page_or_create(Pager::get_internal_node_right_child(left_child));
-            Pager::set_parent(child, left_child_page_num);
+            child = self.pager.get_page_or_create(BtreePager::get_internal_node_right_child(left_child));
+            BtreePager::set_parent(child, left_child_page_num);
         }
 
 
         /* Root node is a new internal node with one key and two children */
-        Pager::initialize_internal_node(root);
-        Pager::set_root_node(root, true);
+        BtreePager::initialize_internal_node(root);
+        BtreePager::set_root_node(root, true);
 
-        Pager::set_internal_node_num_keys(root, 1);
+        BtreePager::set_internal_node_num_keys(root, 1);
         // first child index = left child index
-        Pager::set_internal_node_child(root, 0, left_child_page_num);
+        BtreePager::set_internal_node_child(root, 0, left_child_page_num);
         let left_child_biggest_key = self.pager.get_node_biggest_key(left_child, &self.key_type);
-        Pager::set_internal_node_cell_key(root, 0, self.key_size, &left_child_biggest_key);
-        Pager::set_internal_node_right_child(root, right_child_page_index);
+        BtreePager::set_internal_node_cell_key(root, 0, self.key_size, &left_child_biggest_key);
+        BtreePager::set_internal_node_right_child(root, right_child_page_index);
 
-        Pager::set_parent(left_child, self.root_page_index);
-        Pager::set_parent(right_child, self.root_page_index);
+        BtreePager::set_parent(left_child, self.root_page_index);
+        BtreePager::set_parent(right_child, self.root_page_index);
     }
 
     pub fn internal_node_split_and_insert(&mut self, parent_page_index: usize, child_page_index: usize) {
@@ -1038,7 +1066,7 @@ impl BtreeTable {
              need to find a place for our newly created node in its parent, and we
              cannot insert it at the correct index if it does not yet have any keys
          */
-        let splitting_root = Pager::is_root_node(old_node);
+        let splitting_root = BtreePager::is_root_node(old_node);
         let parent;
         let mut new_node: *mut u8 = null_mut();
         if splitting_root {
@@ -1049,46 +1077,46 @@ impl BtreeTable {
            to the new root's left child, new_page_num will already point to
            the new root's right child
             */
-            old_page_index = Pager::get_internal_node_child(parent, 0);
+            old_page_index = BtreePager::get_internal_node_child(parent.cast_const(), 0);
             old_node = self.pager.get_page_or_create(old_page_index);
         } else {
-            parent = self.pager.get_page_or_create(Pager::get_parent(old_node));
+            parent = self.pager.get_page_or_create(BtreePager::get_parent(old_node.cast_const()));
             new_node = self.pager.get_page_or_create(new_page_index);
-            Pager::initialize_internal_node(new_node);
+            BtreePager::initialize_internal_node(new_node);
         }
 
-        let mut old_num_keys = Pager::get_internal_node_num_keys(old_node);
+        let mut old_num_keys = BtreePager::get_internal_node_num_keys(old_node.cast_const());
 
-        let mut cur_page_num = Pager::get_internal_node_right_child(old_node);
+        let mut cur_page_num = BtreePager::get_internal_node_right_child(old_node.cast_const());
         let mut cur = self.pager.get_page_or_create(cur_page_num);
 
         /*
           First put right child into new node and set right child of old node to invalid page number
           */
         self.internal_node_insert(new_page_index, cur_page_num);
-        Pager::set_parent(cur, new_page_index);
-        Pager::set_internal_node_right_child(old_node, INVALID_PAGE_NUM);
+        BtreePager::set_parent(cur, new_page_index);
+        BtreePager::set_internal_node_right_child(old_node, INVALID_PAGE_NUM);
         /*
          For each key until you get to the middle key, move the key and the child to the new node
          */
         for i in (INTERNAL_NODE_MAX_KEYS / 2 + 1..INTERNAL_NODE_MAX_KEYS - 1).rev() {
-            cur_page_num = Pager::get_internal_node_child(old_node, i);
+            cur_page_num = BtreePager::get_internal_node_child(old_node, i);
             cur = self.pager.get_page_or_create(cur_page_num);
 
             self.internal_node_insert(new_page_index, cur_page_num);
-            Pager::set_parent(cur, new_page_index);
+            BtreePager::set_parent(cur, new_page_index);
             old_num_keys -= 1;
-            Pager::set_internal_node_num_keys(old_node, old_num_keys);
+            BtreePager::set_internal_node_num_keys(old_node, old_num_keys);
         }
 
         /*
           Set child before middle key, which is now the highest key, to be node's right child,
           and decrement number of keys
         */
-        Pager::set_internal_node_right_child(old_node, Pager::get_internal_node_child(old_node, old_num_keys - 1));
+        BtreePager::set_internal_node_right_child(old_node, BtreePager::get_internal_node_child(old_node, old_num_keys - 1));
 
         old_num_keys -= 1;
-        Pager::set_internal_node_num_keys(old_node, old_num_keys);
+        BtreePager::set_internal_node_num_keys(old_node, old_num_keys);
 
         /*
       Determine which of the two nodes after the split should contain the child to be inserted,
@@ -1103,45 +1131,45 @@ impl BtreeTable {
         };
 
         self.internal_node_insert(destination_page_index, child_page_index);
-        Pager::set_parent(child, destination_page_index);
+        BtreePager::set_parent(child, destination_page_index);
 
         let old_key_cell_index = self.internal_node_find_child(parent, &old_max);
-        Pager::set_internal_node_cell_key(parent, old_key_cell_index, self.key_size, &self.pager.get_node_biggest_key(old_node, &self.key_type));
+        BtreePager::set_internal_node_cell_key(parent, old_key_cell_index, self.key_size, &self.pager.get_node_biggest_key(old_node, &self.key_type));
 
         if !splitting_root {
-            self.internal_node_insert(Pager::get_parent(old_node), new_page_index);
-            Pager::set_parent(new_node, Pager::get_parent(old_node));
+            self.internal_node_insert(BtreePager::get_parent(old_node), new_page_index);
+            BtreePager::set_parent(new_node, BtreePager::get_parent(old_node));
         }
     }
 
     pub fn print_tree(&mut self, page_num: usize, indentation_level: usize) {
-        let node = self.pager.get_page_or_create(page_num);
-        match Pager::get_node_type(node) {
+        let node = self.pager.get_page(page_num);
+        match BtreePager::get_node_type(node) {
             NodeType::Leaf => {
                 indent(indentation_level);
                 println!("* node {:p}, index: {}: ", node, page_num);
-                let num_keys = Pager::get_leaf_node_num_cells(node);
+                let num_keys = BtreePager::get_leaf_node_num_cells(node);
                 indent(indentation_level + 1);
                 println!("- leaf (size {})", num_keys);
                 for i in 0..num_keys {
                     indent(indentation_level + 2);
-                    println!("- {:?}", Pager::get_leaf_node_cell_key(node, i, &self.key_type));
+                    println!("- {:?}", self.pager.get_leaf_node_cell_key(node, i, &self.key_type));
                 }
             }
             NodeType::Internal => {
-                let num_keys = Pager::get_internal_node_num_keys(node);
+                let num_keys = BtreePager::get_internal_node_num_keys(node);
                 indent(indentation_level);
                 println!("- internal (size {})", num_keys);
                 if num_keys > 0 {
                     let mut child: usize = 0;
                     for i in 0..num_keys {
-                        let child = Pager::get_internal_node_child(node, i);
+                        let child = BtreePager::get_internal_node_child(node, i);
                         self.print_tree(child, indentation_level + 1);
 
                         indent(indentation_level + 1);
-                        println!("- key {:?}", Pager::get_internal_node_cell_key(node, i, &self.key_type));
+                        println!("- key {:?}", BtreePager::get_internal_node_cell_key(node, i, &self.key_type));
                     }
-                    child = Pager::get_internal_node_right_child(node);
+                    child = BtreePager::get_internal_node_right_child(node);
                     self.print_tree(child, indentation_level + 1);
                 }
             }
@@ -1156,10 +1184,12 @@ impl BtreeTable {
         let parent = self.pager.get_page_or_create(parent_index);
         let child = self.pager.get_page_or_create(child_index);
         let child_max_key = self.pager.get_node_biggest_key(child, &self.key_type);
-        // cell that contains the key -> position of the child in the parent cells
-        let cell_index = self.internal_node_find_child(parent, &child_max_key);
 
-        let original_num_keys = Pager::get_internal_node_num_keys(parent);
+        let parent_const = parent.cast_const();
+        // cell that contains the key -> position of the child in the parent cells
+        let cell_index = self.internal_node_find_child(parent_const, &child_max_key);
+
+        let original_num_keys = BtreePager::get_internal_node_num_keys(parent_const);
 
         /*
           An internal node with a right child of INVALID_PAGE_NUM is empty
@@ -1169,12 +1199,12 @@ impl BtreeTable {
             return;
         }
 
-        let right_child_page_index = Pager::get_internal_node_right_child(parent);
+        let right_child_page_index = BtreePager::get_internal_node_right_child(parent_const);
         /*
         An internal node with a right child of INVALID_PAGE_NUM is empty
         */
         if right_child_page_index == INVALID_PAGE_NUM {
-            Pager::set_internal_node_right_child(parent, child_index);
+            BtreePager::set_internal_node_right_child(parent, child_index);
             return;
         }
 
@@ -1186,52 +1216,45 @@ impl BtreeTable {
         and immediately calling internal_node_split_and_insert has the effect
         of creating a new key at (max_cells + 1) with an uninitialized value
         */
-        Pager::set_internal_node_num_keys(parent, original_num_keys + 1);
+        BtreePager::set_internal_node_num_keys(parent, original_num_keys + 1);
 
         let biggest_key = self.pager.get_node_biggest_key(right_child, &self.key_type);
         if child_max_key > biggest_key {
             /* Replace right child */
-            Pager::set_internal_node_child(parent, original_num_keys, right_child_page_index);
-            Pager::set_internal_node_cell_key(parent, original_num_keys, self.key_size, &biggest_key);
-            Pager::set_internal_node_right_child(parent, child_index);
+            BtreePager::set_internal_node_child(parent, original_num_keys, right_child_page_index);
+            BtreePager::set_internal_node_cell_key(parent, original_num_keys, self.key_size, &biggest_key);
+            BtreePager::set_internal_node_right_child(parent, child_index);
         } else {
             /* Make room for the new cell */
             unsafe {
-                copy(Pager::internal_node_cell(parent, cell_index),
-                     Pager::internal_node_cell(parent, cell_index + 1),
+                copy(BtreePager::get_internal_node_cell(parent, cell_index),
+                     BtreePager::get_internal_node_cell(parent, cell_index + 1),
                      INTERNAL_NODE_CELL_SIZE * (original_num_keys - cell_index))
             }
-            Pager::set_internal_node_child(parent, cell_index, child_index);
-            Pager::set_internal_node_cell_key(parent, cell_index, self.key_size, &child_max_key);
+            BtreePager::set_internal_node_child(parent, cell_index, child_index);
+            BtreePager::set_internal_node_cell_key(parent, cell_index, self.key_size, &child_max_key);
         }
     }
 }
 
 pub struct SequentialTable {
     pub root_page_index: usize,
-    pub pager: Pager,
+    pub row_size: usize,
+    pub max_rows: usize,
+    pub pager: BtreePager,
 }
 
 impl SequentialTable {
-    pub(crate) fn new(path: &str) -> SequentialTable {
-        let pager = Pager::open(path);
-        let mut pager = pager;
-        if pager.size == 0 {
-            let first_page = pager.get_page_or_create(0);
-            Pager::initialize_leaf_node(first_page);
-            Pager::set_root_node(first_page, true);
-        }
-        SequentialTable {
-            root_page_index: 0,
-            pager,
-        }
+    pub(crate) fn new(path: &str, table_metadata: &TableStructureMetadata) -> SequentialTable {
+        todo!()
     }
 
     pub fn read_all(&mut self) -> Vec<Row> {
+        let row_size = self.row_size;
         let mut cursor = Cursor::at(self, 0, 0);
         let mut result = Vec::new();
         while !cursor.is_end() {
-            result.push(Row::deserialize_row(cursor.cursor_value()));
+            result.push(Row::deserialize_row(cursor.cursor_value(), row_size));
             cursor.cursor_advance();
         }
         result
@@ -1243,12 +1266,11 @@ impl Table for SequentialTable {
         todo!()
     }
 
-    fn insert(&mut self, page_index: usize, cell_index: usize, row: Row) {
+    fn insert(&mut self, page_index: usize, cell_index: usize, row: &Row) {
         todo!()
     }
 
-
-    fn find_by_condition(&mut self, condition_expr: ConditionExpr) -> Cursor {
+    fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Cursor {
         todo!()
     }
 
@@ -1257,7 +1279,31 @@ impl Table for SequentialTable {
     }
 
     fn is_index_table(&self) -> bool {
-        false
+        todo!()
+    }
+
+    fn get_row_size(&self) -> usize {
+        todo!()
+    }
+
+    fn get_num_cells(&self, page_index: usize) -> usize {
+        todo!()
+    }
+
+    fn get_next_page(&self, page_index: usize) -> usize {
+        todo!()
+    }
+
+    fn get_row_value(&mut self, page_index: usize, cell_index: usize) -> *mut u8 {
+        todo!()
+    }
+
+    fn flush_to_disk(&self) {
+        todo!()
+    }
+
+    fn print_tree(&self, page_index: usize, cell_index: usize) {
+        todo!()
     }
 }
 
@@ -1267,20 +1313,13 @@ type Page = [u8; PAGE_SIZE];
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct Row {
-    pub id: usize,
-    pub username: [u8; COLUMN_USERNAME_SIZE],
-    pub email: [u8; COLUMN_EMAIL_SIZE],
-    // TODO
-    pub key: usize,
+    pub data: Box<[u8]>
 }
 
 impl Row {
-    fn new(id: usize, username: [u8; COLUMN_USERNAME_SIZE], email: [u8; COLUMN_EMAIL_SIZE]) -> Row {
+    fn new_indexed_row(data: Box<[u8]>) -> Row {
         Row {
-            id,
-            username,
-            email,
-            key: 1,
+            data
         }
     }
 
@@ -1288,54 +1327,35 @@ impl Row {
     pub(crate) fn serialize_row(&self, destination: *mut u8) {
         unsafe {
             ptr::copy_nonoverlapping(
-                (&self.id as *const usize) as *const u8,
-                destination.add(ID_OFFSET),
-                1,
-            );
-
-            ptr::copy_nonoverlapping(
-                self.username.as_ptr(),
-                destination.add(USERNAME_OFFSET),
-                USERNAME_SIZE,
-            );
-
-            ptr::copy_nonoverlapping(
-                self.email.as_ptr(),
-                destination.add(EMAIL_OFFSET),
-                EMAIL_SIZE,
+                self.data.as_ptr(),
+                destination,
+                self.data.len(),
             );
         }
     }
 
-    pub(crate) fn deserialize_row(source: *const u8) -> Row {
-        let mut destination = Row {
-            id: 0,
-            username: [0u8; COLUMN_USERNAME_SIZE],
-            email: [0u8; COLUMN_EMAIL_SIZE],
-            key: 1,
-        };
-
+    fn deserialize_row(source: *const u8, row_size: usize) -> Row {
+        let mut data = Vec::<u8>::with_capacity(row_size);
         unsafe {
             ptr::copy_nonoverlapping(
-                source.add(ID_OFFSET),
-                &mut destination.id as *mut usize as *mut u8,
-                ID_SIZE,
+                source,
+                data.as_mut_ptr(),
+                row_size,
             );
-
-            ptr::copy_nonoverlapping(
-                source.add(USERNAME_OFFSET),
-                destination.username.as_mut_ptr(),
-                USERNAME_SIZE,
-            );
-
-            ptr::copy_nonoverlapping(
-                source.add(EMAIL_OFFSET),
-                destination.email.as_mut_ptr(),
-                EMAIL_SIZE,
-            );
+            data.set_len(row_size);
         }
 
-        destination
+        Row {
+            data: data.into_boxed_slice()
+        }
+    }
+
+    pub(crate) fn deserialize_row_from_bytes(bytes: &[u8]) -> Row {
+        Self::deserialize_row(bytes.as_ptr(), bytes.len())
+    }
+
+    pub fn read_key(&self, key_type: &DataType, key_offset: usize, key_size: usize) -> Value {
+        Value::from_bytes(key_type, &self.data[key_offset..key_offset + key_size])
     }
 }
 
@@ -1367,6 +1387,32 @@ pub fn new_input_buffer() -> &'static str {
     input.leak().trim()
 }
 
+pub struct TableStructureMetadata {
+    pub table_name: String,
+    pub row_size: usize,
+    pub fields_metadata: HashMap<String, FieldMetadata>,
+}
+
+impl TableStructureMetadata {
+    fn new(table_name: &str, fields_metadata: HashMap<String, FieldMetadata>) -> TableStructureMetadata {
+        let row_size = fields_metadata.values().map(|m| m.size).reduce(|a, b| a + b).unwrap();
+        TableStructureMetadata {
+            table_name: table_name.to_string(),
+            row_size,
+            fields_metadata,
+        }
+    }
+
+    pub fn get_field_metadata(&self, field_name: &str) -> Result<&FieldMetadata, String> {
+        match self.fields_metadata.get(field_name) {
+            None => {
+                Err(format!("Field {} does not found in the table {}!", field_name, self.table_name))
+            }
+            Some(fm) => {Ok(fm)}
+        }
+    }
+}
+
 pub struct FieldMetadata {
     field_definition: FieldDefinition,
     pub offset: usize,
@@ -1381,26 +1427,4 @@ impl FieldMetadata {
             size,
         }
     }
-}
-
-pub fn execute_insert(statement: &Statement, table: &mut dyn Table) -> ExecutionResult {
-    let row_to_insert = &statement.row;
-
-    let row = row_to_insert.as_ref().unwrap();
-    let mut cursor = if table.is_index_table() {
-        table.find_by_condition(ConditionExpr::new(OR, String::from("id"), Operator::EQUALS(false), Value::INTEGER(row.id as i32)))
-    } else {
-        table.end()
-    };
-    cursor.insert_row(row.id, row);
-    ExecutionResult::ExecutionSuccess
-}
-
-pub fn execute_select(mut cursor: Cursor) -> ExecutionResult {
-    while !cursor.is_end() {
-        let mut row = Row::deserialize_row(cursor.cursor_value());
-        println!("[id:{}, username:{}, email:{}]", row.id, String::from_utf8_lossy(row.username.as_slice()), String::from_utf8_lossy(row.email.as_slice()));
-        cursor.cursor_advance();
-    }
-    ExecutionResult::ExecutionSuccess
 }

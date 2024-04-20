@@ -1,13 +1,13 @@
 use std::cmp::{Ordering, PartialEq, PartialOrd};
 use std::collections::{HashSet};
-use std::fs;
+use std::{fs, ptr};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
-use crate::storage_engine::config::{BOOLEAN_SIZE, DATA_FOLDER, FLOAT_SIZE, INTEGER_SIZE};
-use crate::storage_engine::core::{Row, BtreeTable};
-use crate::utils::utils::is_folder_empty;
+use crate::storage_engine::config::{BOOLEAN_SIZE, DATA_FOLDER, FLOAT_SIZE, INTEGER_SIZE, TEXT_DEFAULT_SIZE};
+use crate::storage_engine::core::{Row, BtreeTable, Table};
+use crate::utils::utils::{is_folder_empty, u8_array_to_string};
 
 pub(crate) trait Printable {
     fn print_stmt(&self) {}
@@ -183,11 +183,11 @@ impl WhereExpr {
         Ok(outer_set)
     }
 
-    fn find_rows(condition_cluster: &ConditionCluster, table: &mut BtreeTable) -> Result<HashSet<Row>, String> {
+    fn find_rows(condition_cluster: &ConditionCluster, table: &mut dyn Table) -> Result<HashSet<Row>, String> {
         let mut set: HashSet<Row> = HashSet::<Row>::new();
         for condition in &condition_cluster.conditions {
-            let result = table.table_find_by_value(&condition.field, &condition.operator, &condition.value)?;
-            match condition.logical_operator {
+            let cursor = table.find_by_condition(condition);
+            /*match condition.logical_operator {
                 OR => {
                     result.into_iter().for_each(|r| {
                         set.insert(r);
@@ -196,7 +196,8 @@ impl WhereExpr {
                 AND => {
                     set.retain(|e| result.contains(e));
                 }
-            };
+            };*/
+            todo!()
         }
         Ok(set)
     }
@@ -219,7 +220,7 @@ impl CreateStmt {
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct FieldDefinition {
-    pub field: String,
+    pub field_name: String,
     pub data_type: DataType,
     pub is_primary_key: bool,
 }
@@ -227,7 +228,7 @@ pub(crate) struct FieldDefinition {
 impl FieldDefinition {
     pub fn new(field: String, data_type: DataType, is_primary_key: bool) -> FieldDefinition {
         FieldDefinition {
-            field,
+            field_name: field,
             data_type,
             is_primary_key,
         }
@@ -516,6 +517,37 @@ impl Value {
             _ => false
         }
     }
+
+    pub fn from_bytes(key_type: &DataType, bytes: &[u8]) -> Value {
+        Self::from_ptr(key_type, bytes.as_ptr())
+    }
+
+    pub fn from_ptr(key_type: &DataType, src: *const u8) -> Value {
+        unsafe {
+            match key_type {
+                DataType::TEXT(size) => {
+                    let mut bytes = Vec::<u8>::with_capacity(*size);
+                    ptr::copy_nonoverlapping(src, bytes.as_mut_ptr(), *size);
+                    Value::STRING(u8_array_to_string(bytes.as_slice()))
+                }
+                DataType::INTEGER => {
+                    let key: i32 = 0;
+                    ptr::copy_nonoverlapping(src, &key as *const i32 as *mut u8, key_type.get_size());
+                    Value::INTEGER(key)
+                }
+                DataType::FLOAT => {
+                    let key: f32 = 0.0;
+                    ptr::copy_nonoverlapping(src, &key as *const f32 as *mut u8, key_type.get_size());
+                    Value::FLOAT(key)
+                }
+                DataType::BOOLEAN => {
+                    let key: bool = false;
+                    ptr::copy_nonoverlapping(src, &key as *const bool as *mut u8, key_type.get_size());
+                    Value::BOOLEAN(key)
+                }
+            }
+        }
+    }
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
@@ -538,7 +570,7 @@ impl DataType {
 
     pub fn from_bit_code(bit_code: u8) -> Result<DataType, String> {
         match bit_code {
-            0b0000_0000 => {Ok(DataType::TEXT(255))}
+            0b0000_0000 => {Ok(DataType::TEXT(TEXT_DEFAULT_SIZE))}
             0b0000_0001 => {Ok(DataType::INTEGER)}
             0b0000_0010 => {Ok(DataType::FLOAT)}
             0b0000_0011 => {Ok(DataType::BOOLEAN)}
