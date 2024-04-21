@@ -512,7 +512,13 @@ impl SequentialPager {
         self.abstract_pager.total_pages
     }
 
-    pub(crate) fn get_row_value(&self, page: *mut u8, cell_index: usize, row_size: usize) -> *mut u8 {
+    pub(crate) fn get_row_value(&self, page: *const u8, cell_index: usize, row_size: usize) -> *const u8 {
+        unsafe {
+            page.add(SEQUENTIAL_NODE_BODY_OFFSET + cell_index * row_size)
+        }
+    }
+
+    pub(crate) fn get_row_value_mut(&mut self, page: *mut u8, cell_index: usize, row_size: usize) -> *mut u8 {
         unsafe {
             page.add(SEQUENTIAL_NODE_BODY_OFFSET + cell_index * row_size)
         }

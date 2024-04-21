@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::ptr;
@@ -5,7 +6,7 @@ use std::ptr::null_mut;
 use crate::sql_engine::sql_structs::{ConditionCluster, ConditionExpr, DataType, LogicalOperator, Value};
 use crate::storage_engine::config::{BTREE_METADATA_SIZE, INDEXED_FIELD_NAME_SIZE, INDEXED_FIELD_NAME_SIZE_OFFSET, INDEXED_FIELD_SIZE, INDEXED_FIELD_SIZE_OFFSET, INDEXED_FIELD_TYPE_PRIMARY, INTERNAL_NODE_CELL_SIZE, INTERNAL_NODE_MAX_KEYS, INVALID_PAGE_NUM, PAGE_SIZE, SEQUENTIAL_NODE_BODY_OFFSET, SEQUENTIAL_NODE_HEADER_SIZE, TABLE_MAX_PAGES};
 use crate::storage_engine::common::{RowBytes, TableStructureMetadata};
-use crate::storage_engine::cursor::Cursor;
+use crate::storage_engine::cursor::{Cursor, ReadCursor, WriteReadCursor};
 use crate::storage_engine::enums::NodeType;
 use crate::storage_engine::pagers::{BtreePager, Pager, SequentialPager};
 use crate::utils::utils::{copy, copy_nonoverlapping, indent, u8_array_to_string};
@@ -18,9 +19,10 @@ pub trait Table {
     fn end(&mut self) -> Cursor;
     fn is_btree(&self) -> bool;
     fn get_row_size(&self) -> usize;
-    fn get_num_cells(&mut self, page_index: usize) -> usize;
+    fn get_num_cells(&self, page_index: usize) -> usize;
     fn get_next_page_index(&self, page_index: usize) -> usize;
-    fn get_row_value(&mut self, page_index: usize, cell_index: usize) -> *mut u8;
+    fn get_row_value(&self, page_index: usize, cell_index: usize) -> *const u8;
+    fn get_row_value_mut(&mut self, page_index: usize, cell_index: usize) -> *mut u8;
     fn flush_to_disk(&mut self);
     fn get_meta(&self) -> &TableStructureMetadata;
     fn print_tree(&self, page_index: usize, cell_index: usize);
@@ -38,7 +40,8 @@ pub struct BtreeTable {
 
 impl Table for BtreeTable {
     fn begin(&mut self) -> Cursor {
-        self.find_smallest_or_biggest_key(false)
+        //self.find_smallest_or_biggest_key(false)
+        todo!()
     }
 
     fn insert(&mut self, page_index: usize, cell_index: usize, row: &RowBytes) {
@@ -61,7 +64,8 @@ impl Table for BtreeTable {
     }
 
     fn end(&mut self) -> Cursor {
-        self.find_smallest_or_biggest_key(true)
+        //self.find_smallest_or_biggest_key(true)
+        todo!()
     }
 
     fn is_btree(&self) -> bool {
@@ -72,17 +76,21 @@ impl Table for BtreeTable {
         self.row_size
     }
 
-    fn get_num_cells(&mut self, page_index: usize) -> usize {
-        BtreePager::get_leaf_node_num_cells(self.pager.get_or_create_page(page_index))
+    fn get_num_cells(&self, page_index: usize) -> usize {
+        BtreePager::get_leaf_node_num_cells(self.pager.get_page(page_index))
     }
 
     fn get_next_page_index(&self, page_index: usize) -> usize {
         BtreePager::get_leaf_node_next_leaf(self.pager.get_page(page_index))
     }
 
-    fn get_row_value(&mut self, page_index: usize, cell_index: usize) -> *mut u8 {
-        let page = self.pager.get_or_create_page(page_index);
-        self.pager.get_leaf_node_value(page, cell_index)
+    fn get_row_value(&self, page_index: usize, cell_index: usize) -> *const u8 {
+        let page = self.pager.get_page(page_index);
+        self.pager.get_leaf_node_value(page.cast_mut(), cell_index)
+    }
+
+    fn get_row_value_mut(&mut self, page_index: usize, cell_index: usize) -> *mut u8 {
+        todo!()
     }
 
     fn flush_to_disk(&mut self) {
@@ -239,7 +247,7 @@ impl BtreeTable {
         row.serialize_row(self.pager.get_leaf_node_value(page, cell_index));
     }
 
-    pub(crate) fn table_find_by_key(&mut self, key: &Value) -> Cursor {
+    pub(crate) fn table_find_by_key(&mut self, key: &Value) -> WriteReadCursor {
         let node_type = self.pager.get_node_type_by_index(self.root_page_index);
         match node_type {
             NodeType::Internal => {
@@ -251,7 +259,7 @@ impl BtreeTable {
         }
     }
 
-    pub(crate) fn find_smallest_or_biggest_key(&mut self, biggest: bool) -> Cursor {
+    pub(crate) fn find_smallest_or_biggest_key(&mut self, biggest: bool) -> WriteReadCursor {
         let node_type = self.pager.get_node_type_by_index(self.root_page_index);
         match node_type {
             NodeType::Internal => {
@@ -263,7 +271,7 @@ impl BtreeTable {
         }
     }
 
-    fn leaf_node_find(&mut self, page_index: usize, key: &Value) -> Cursor {
+    fn leaf_node_find(&mut self, page_index: usize, key: &Value) -> WriteReadCursor {
         let node = self.pager.get_or_create_page(page_index);
         let cells_num = BtreePager::get_leaf_node_num_cells(node);
 
@@ -273,7 +281,7 @@ impl BtreeTable {
             let index = (min_index + right) / 2;
             let key_at_index = self.pager.get_leaf_node_cell_key(node, index, &self.key_type);
             if *key == key_at_index {
-                return Cursor::at(self, page_index, index);
+                return WriteReadCursor::at(self, page_index, index);
             }
             if *key < key_at_index {
                 right = index;
@@ -282,15 +290,15 @@ impl BtreeTable {
             }
         }
 
-        Cursor::at(self, page_index, min_index)
+        WriteReadCursor::at(self, page_index, min_index)
     }
 
-    fn leaf_node_find_smallest_or_biggest(&mut self, page_index: usize, biggest: bool) -> Cursor {
+    fn leaf_node_find_smallest_or_biggest(&mut self, page_index: usize, biggest: bool) -> WriteReadCursor {
         let mut cell_index = 0;
         if biggest {
             cell_index = BtreePager::get_leaf_node_num_cells(self.pager.get_or_create_page(page_index))
         }
-        Cursor::at(self, page_index, cell_index)
+        WriteReadCursor::at(self, page_index, cell_index)
     }
 
     pub fn internal_node_find_child(&mut self, node: *const u8, key: &Value) -> usize {
@@ -313,7 +321,7 @@ impl BtreeTable {
         min_index
     }
 
-    pub fn internal_node_find_smallest_or_biggest(&mut self, page_index: usize, biggest: bool) -> Cursor {
+    pub fn internal_node_find_smallest_or_biggest(&mut self, page_index: usize, biggest: bool) -> WriteReadCursor {
         /*
           Return the index of the child which contains the smallest key
         */
@@ -338,7 +346,7 @@ impl BtreeTable {
         }
     }
 
-    fn internal_node_find(&mut self, page_index: usize, key: &Value) -> Cursor {
+    fn internal_node_find(&mut self, page_index: usize, key: &Value) -> WriteReadCursor {
         let node = self.pager.get_or_create_page(page_index);
         let cell_index = self.internal_node_find_child(node, key);
         let child_index = BtreePager::get_internal_node_child(node, cell_index);
@@ -623,7 +631,7 @@ impl SequentialTable {
 
     pub fn read_all(&mut self) -> Vec<RowBytes> {
         let row_size = self.table_metadata.row_size;
-        let mut cursor = Cursor::at(self, 0, 0);
+        let mut cursor = ReadCursor::at(self, 0, 0);
         let mut result = Vec::new();
         while !cursor.is_end() {
             result.push(RowBytes::deserialize_row(cursor.cursor_value(), row_size));
@@ -633,7 +641,7 @@ impl SequentialTable {
     }
 
     pub(crate) fn insert_to_end(&mut self, page_index: usize, cell_index: usize, row: &RowBytes) {
-        let ptr = self.get_row_value(page_index, cell_index);
+        let ptr = self.get_row_value_mut(page_index, cell_index);
         copy_nonoverlapping(row.data.as_ptr(), ptr, self.table_metadata.row_size);
         self.pager.increment_cells_num(page_index);
     }
@@ -653,8 +661,9 @@ impl SequentialTable {
 
 impl Table for SequentialTable {
     fn begin(&mut self) -> Cursor {
-        let page_index = self.root_page_index;
-        Cursor::at(self, page_index, 0)
+        /*let page_index = self.root_page_index;
+        Cursor::at(self, page_index, 0)*/
+        todo!()
     }
 
     fn insert(&mut self, page_index: usize, cell_index: usize, row: &RowBytes) {
@@ -673,14 +682,14 @@ impl Table for SequentialTable {
         let field_size = self.table_metadata.get_field_metadata(&condition_expr.field)
             .unwrap().size;
         let row_size = self.table_metadata.row_size;
-        let mut cursor = Cursor::at(self, 0, 0);
+        let mut cursor = ReadCursor::at(self, 0, 0);
         let mut result = Vec::new();
 
         let mut buf = Vec::<u8>::with_capacity(field_size);
 
         unsafe {
             while !cursor.is_end() {
-                let row_ptr = cursor.cursor_value().cast_const();
+                let row_ptr = cursor.cursor_value();
 
                 if self.read_compare_value(row_ptr, &mut buf, condition_expr){
                     result.push(RowBytes::deserialize_row(row_ptr, row_size));
@@ -695,7 +704,7 @@ impl Table for SequentialTable {
 
     fn find_by_condition_clusters(&mut self, condition_clusters: &Vec<(LogicalOperator, ConditionCluster)>) -> Vec<RowBytes> {
         let row_size = self.table_metadata.row_size;
-        let mut cursor = Cursor::at(self, 0, 0);
+        let mut cursor = ReadCursor::at(self, 0, 0);
         let mut result = Vec::new();
 
         let mut cluster_conditions = Vec::<(&LogicalOperator, Vec<&ConditionExpr>, Vec<&ConditionExpr>, usize)>::with_capacity(condition_clusters.len());
@@ -725,7 +734,7 @@ impl Table for SequentialTable {
 
         unsafe {
             while !cursor.is_end() {
-                let row_ptr = cursor.cursor_value().cast_const();
+                let row_ptr = cursor.cursor_value();
                 let mut all_clusters_matched = true;
                 for (logical_op, and_conditions, or_conditions, _) in &cluster_conditions {
 
@@ -762,9 +771,10 @@ impl Table for SequentialTable {
     }
 
     fn end(&mut self) -> Cursor {
-        let total_cells = self.get_num_cells(self.pager.get_total_page());
+        /*let total_cells = self.get_num_cells(self.pager.get_total_page());
         let total_pages = self.pager.get_total_page();
-        Cursor::at(self, total_pages, total_cells)
+        Cursor::at(self, total_pages, total_cells)*/
+        todo!()
     }
 
     fn is_btree(&self) -> bool {
@@ -775,9 +785,9 @@ impl Table for SequentialTable {
         self.table_metadata.row_size
     }
 
-    fn get_num_cells(&mut self, page_index: usize) -> usize {
-        let page = self.pager.get_or_create_page(page_index);
-        SequentialPager::get_num_cells(page.cast_const())
+    fn get_num_cells(&self, page_index: usize) -> usize {
+        let page = self.pager.get_page(page_index);
+        SequentialPager::get_num_cells(page)
     }
 
     fn get_next_page_index(&self, page_index: usize) -> usize {
@@ -788,9 +798,14 @@ impl Table for SequentialTable {
         }
     }
 
-    fn get_row_value(&mut self, page_index: usize, cell_index: usize) -> *mut u8 {
-        let page = self.pager.get_or_create_page(page_index);
+    fn get_row_value(&self, page_index: usize, cell_index: usize) -> *const u8 {
+        let page = self.pager.get_page(page_index);
         self.pager.get_row_value(page, cell_index, self.table_metadata.row_size)
+    }
+
+    fn get_row_value_mut(&mut self, page_index: usize, cell_index: usize) -> *mut u8 {
+        let page = self.pager.get_or_create_page(page_index);
+        self.pager.get_row_value_mut(page, cell_index, self.table_metadata.row_size)
     }
 
     fn flush_to_disk(&mut self) {

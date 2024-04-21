@@ -153,7 +153,7 @@ impl InsertStmt {
         path.push(&self.table);
         if is_folder_empty(&path) {
             path.push(format!("{}_main", &self.table));
-            File::create(path);
+            let _ = File::create(path);
         }
     }
 }
