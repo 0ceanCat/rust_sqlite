@@ -56,11 +56,10 @@ impl AbstractPager {
 
 impl Pager for AbstractPager {
     fn get_page(&self, page_index: usize) -> *const u8 {
-        if page_index > TABLE_MAX_PAGES {
-            println!("Tried to fetch page number out of bounds. {} > {}\n", page_index, TABLE_MAX_PAGES);
-            exit(1);
+        unsafe {
+            let s_ptr: &mut Self = std::mem::transmute(self as *const Self);
+            (*s_ptr).get_or_create_page(page_index).cast_const()
         }
-        self.pages[page_index].unwrap().as_mut_ptr()
     }
 
 

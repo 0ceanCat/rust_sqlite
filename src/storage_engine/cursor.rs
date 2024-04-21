@@ -49,15 +49,6 @@ impl<'a> WriteReadCursor<'a> {
         }
     }
 
-    pub(crate) fn table_start(table: &mut dyn Table) -> Cursor {
-        //  if key 0 does not exist in the table, this method will return the position of the lowest id (the start of the left-most leaf node)
-        table.begin()
-    }
-
-    pub(crate) fn table_end(table: &mut dyn Table) -> Cursor {
-        table.end()
-    }
-
     pub(crate) fn cursor_value(&mut self) -> *mut u8 {
         self.table.get_row_value_mut(self.page_index, self.cell_index)
     }
