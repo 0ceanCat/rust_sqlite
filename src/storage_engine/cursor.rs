@@ -1,5 +1,5 @@
 use crate::storage_engine::tables::{Table};
-use crate::storage_engine::common::{Row};
+use crate::storage_engine::common::{RowBytes};
 
 pub struct Cursor<'a> {
     table: &'a mut dyn Table,
@@ -39,7 +39,7 @@ impl<'a> Cursor<'a> {
         self.cell_index += 1;
 
         if self.cell_index >= self.table.get_num_cells(self.page_index) {
-            let next_page_index = self.table.get_next_page(self.page_index);
+            let next_page_index = self.table.get_next_page_index(self.page_index);
             if next_page_index == 0 {
                 /* This is the last leaf */
                 self.end_of_table = true;
@@ -50,7 +50,7 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    pub(crate) fn insert_row(&mut self, row: &Row) {
+    pub(crate) fn insert_row(&mut self, row: &RowBytes) {
         self.table.insert(self.page_index, self.cell_index, row)
     }
 

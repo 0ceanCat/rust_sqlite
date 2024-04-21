@@ -1,13 +1,11 @@
 use std::cmp::{Ordering, PartialEq, PartialOrd};
-use std::collections::{HashSet};
 use std::{fs, ptr};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 use crate::storage_engine::config::{BOOLEAN_SIZE, DATA_FOLDER, FLOAT_SIZE, INTEGER_SIZE, TEXT_DEFAULT_SIZE};
-use crate::storage_engine::common::{Row};
-use crate::storage_engine::tables::{BtreeTable, Table};
+use crate::storage_engine::common::{FieldMetadata, HumanReadableRow, RowBytes};
+use crate::storage_engine::tables::{Table};
 use crate::utils::utils::{is_folder_empty, u8_array_to_string};
 
 pub(crate) trait Printable {
@@ -31,7 +29,7 @@ impl Printable for SelectStmt {
 
 impl Printable for WhereExpr {
     fn print_stmt(&self) {
-        println!("{:?}", self.condition_exprs)
+        println!("{:?}", self.condition_cluster)
     }
 }
 
@@ -79,7 +77,7 @@ impl SelectStmt {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<Vec<Row>, String> {
+    pub(crate) fn execute(&self) -> Result<Vec<RowBytes>, String> {
         /*let file = self.table_file()?;
         let pager = Pager::open_from(file);
         let mut table = Table::new(pager);
@@ -162,45 +160,18 @@ impl InsertStmt {
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct WhereExpr {
-    condition_exprs: Vec<(LogicalOperator, ConditionCluster)>,
+    condition_cluster: Vec<(LogicalOperator, ConditionCluster)>,
 }
 
 impl WhereExpr {
     pub(crate) fn new(condition_exprs: Vec<(LogicalOperator, ConditionCluster)>) -> WhereExpr {
         WhereExpr {
-            condition_exprs
+            condition_cluster: condition_exprs
         }
     }
 
-    fn execute(&self, table: &mut BtreeTable) -> Result<HashSet<Row>, String> {
-        let mut outer_set = HashSet::<Row>::new();
-        for (op, cluster) in &self.condition_exprs {
-            let set = Self::find_rows(cluster, table)?;
-            match op {
-                OR => outer_set.extend(set),
-                AND => outer_set.retain(|r| set.contains(r))
-            }
-        }
-        Ok(outer_set)
-    }
-
-    fn find_rows(condition_cluster: &ConditionCluster, table: &mut dyn Table) -> Result<HashSet<Row>, String> {
-        let mut set: HashSet<Row> = HashSet::<Row>::new();
-        for condition in &condition_cluster.conditions {
-            let cursor = table.find_by_condition(condition);
-            /*match condition.logical_operator {
-                OR => {
-                    result.into_iter().for_each(|r| {
-                        set.insert(r);
-                    });
-                }
-                AND => {
-                    set.retain(|e| result.contains(e));
-                }
-            };*/
-            todo!()
-        }
-        Ok(set)
+    fn execute(&self, table: &mut Box<dyn Table>) -> Vec<RowBytes> {
+        table.find_by_condition_clusters(&self.condition_cluster)
     }
 }
 
@@ -275,7 +246,7 @@ impl OrderByExpr {
 
 #[derive(PartialEq, Debug, PartialOrd)]
 pub(crate) struct ConditionCluster {
-    conditions: Vec<ConditionExpr>,
+    pub conditions: Vec<ConditionExpr>,
 }
 
 impl ConditionCluster {
@@ -341,16 +312,36 @@ pub(crate) enum LogicalOperator {
     AND,
 }
 
+impl LogicalOperator {
+    pub fn operate(&self, b1: bool, b2: bool) -> bool {
+        match self {
+            LogicalOperator::OR => { b1 | b2 }
+            LogicalOperator::AND => { b1 & b2 }
+        }
+    }
+
+    pub fn is_and(&self) -> bool {
+        match self {
+            LogicalOperator::OR => { false }
+            LogicalOperator::AND => { true }
+        }
+    }
+
+    pub fn is_or(&self) -> bool {
+        !self.is_and()
+    }
+}
+
 impl TryFrom<&str> for LogicalOperator {
     type Error = &'static str;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
             "or" => {
-                Ok(OR)
+                Ok(LogicalOperator::OR)
             }
             "and" => {
-                Ok(AND)
+                Ok(LogicalOperator::AND)
             }
             _ => { Err("Unknown logical operator.") }
         }
@@ -549,9 +540,36 @@ impl Value {
             }
         }
     }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            Value::INTEGER(i) => { i.to_string() }
+            Value::FLOAT(f) => { f.to_string() }
+            Value::BOOLEAN(b) => {
+                b.to_string()
+            }
+            Value::STRING(s) => {
+                s.to_string()
+            }
+            Value::ARRAY(a) => {
+                let mut s = String::new();
+                s.push('[');
+                a.iter().for_each(|v| {
+                    s.push_str(&v.to_string());
+                    s.push_str(",")
+                });
+                s.remove(s.len() - 1);
+                s.push(']');
+                s
+            }
+            Value::SelectStmt(_) => {
+                String::new()
+            }
+        }
+    }
 }
 
-#[derive(PartialEq, PartialOrd, Debug)]
+#[derive(PartialEq, PartialOrd, Debug, Copy, Clone)]
 pub enum DataType {
     TEXT(usize),
     INTEGER,
@@ -571,20 +589,20 @@ impl DataType {
 
     pub fn from_bit_code(bit_code: u8) -> Result<DataType, String> {
         match bit_code {
-            0b0000_0000 => {Ok(DataType::TEXT(TEXT_DEFAULT_SIZE))}
-            0b0000_0001 => {Ok(DataType::INTEGER)}
-            0b0000_0010 => {Ok(DataType::FLOAT)}
-            0b0000_0011 => {Ok(DataType::BOOLEAN)}
-            _ => {Err(format!("Unknown bit code {}", bit_code))}
+            0b0000_0000 => { Ok(DataType::TEXT(TEXT_DEFAULT_SIZE)) }
+            0b0000_0001 => { Ok(DataType::INTEGER) }
+            0b0000_0010 => { Ok(DataType::FLOAT) }
+            0b0000_0011 => { Ok(DataType::BOOLEAN) }
+            _ => { Err(format!("Unknown bit code {}", bit_code)) }
         }
     }
 
     pub fn get_size(&self) -> usize {
         match self {
-            DataType::TEXT(size) => {*size}
-            DataType::INTEGER => {INTEGER_SIZE}
-            DataType::FLOAT => {FLOAT_SIZE}
-            DataType::BOOLEAN => {BOOLEAN_SIZE}
+            DataType::TEXT(size) => { *size }
+            DataType::INTEGER => { INTEGER_SIZE }
+            DataType::FLOAT => { FLOAT_SIZE }
+            DataType::BOOLEAN => { BOOLEAN_SIZE }
         }
     }
 }

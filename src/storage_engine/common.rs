@@ -227,17 +227,16 @@ pub(crate) type Page = [u8; PAGE_SIZE];
 
 
 #[derive(Debug, Hash, Eq, PartialEq)]
-pub struct Row {
+pub struct RowBytes {
     pub data: Box<[u8]>
 }
 
-impl Row {
-    fn new_indexed_row(data: Box<[u8]>) -> Row {
-        Row {
+impl RowBytes {
+    fn new_indexed_row(data: Box<[u8]>) -> RowBytes {
+        RowBytes {
             data
         }
     }
-
 
     pub(crate) fn serialize_row(&self, destination: *mut u8) {
         unsafe {
@@ -249,7 +248,7 @@ impl Row {
         }
     }
 
-    pub(crate) fn deserialize_row(source: *const u8, row_size: usize) -> Row {
+    pub(crate) fn deserialize_row(source: *const u8, row_size: usize) -> RowBytes {
         let mut data = Vec::<u8>::with_capacity(row_size);
         unsafe {
             ptr::copy_nonoverlapping(
@@ -260,17 +259,46 @@ impl Row {
             data.set_len(row_size);
         }
 
-        Row {
+        RowBytes {
             data: data.into_boxed_slice()
         }
     }
 
-    pub(crate) fn deserialize_row_from_bytes(bytes: &[u8]) -> Row {
-        Self::deserialize_row(bytes.as_ptr(), bytes.len())
-    }
-
     pub fn read_key(&self, key_type: &DataType, key_offset: usize, key_size: usize) -> Value {
         Value::from_bytes(key_type, &self.data[key_offset..key_offset + key_size])
+    }
+}
+
+pub struct SelectResult<'a> {
+    pub field_offset_size_triples: Vec<(&'a str, usize, usize)>,
+    pub rows: Vec<HumanReadableRow>
+}
+
+impl<'a> SelectResult<'a> {
+    pub fn new(field_offset_size_triples: Vec<(&'a str, usize, usize)>, rows: Vec<HumanReadableRow>) -> SelectResult {
+        SelectResult {
+            field_offset_size_triples,
+            rows
+        }
+    }
+}
+
+pub struct HumanReadableRow {
+    fields: Vec<Value>,
+}
+
+impl HumanReadableRow {
+    fn new(fields: Vec<Value>) -> HumanReadableRow{
+        HumanReadableRow {
+            fields
+        }
+    }
+
+    fn to_string(&self) -> String {
+        let mut s = String::new();
+       /* self.fields.iter().for_each(|(name, value)| s.push_str(format!("{}: {},", name, value.to_string()).as_str()));
+        s.remove(s.len() - 1);*/
+        s
     }
 }
 
@@ -315,7 +343,7 @@ impl TableStructureMetadata {
 }
 
 pub struct FieldMetadata {
-    field_definition: FieldDefinition,
+    pub data_type: DataType,
     pub offset: usize,
     pub size: usize,
 }
@@ -323,7 +351,7 @@ pub struct FieldMetadata {
 impl FieldMetadata {
     pub fn new(field_definition: FieldDefinition, offset: usize, size: usize) -> FieldMetadata {
         FieldMetadata {
-            field_definition,
+            data_type: field_definition.data_type,
             offset,
             size,
         }

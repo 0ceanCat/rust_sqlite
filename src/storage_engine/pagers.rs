@@ -4,25 +4,57 @@ use std::os::windows::fs::FileExt;
 use std::process::exit;
 use std::ptr;
 use crate::sql_engine::sql_structs::{DataType, Value};
-use crate::storage_engine::config::{BtreeLeafNodeBodyLayout, INTERNAL_NODE_BODY_OFFSET, INTERNAL_NODE_CELL_SIZE, INTERNAL_NODE_CHILD_SIZE, INTERNAL_NODE_NUM_KEYS_OFFSET, INTERNAL_NODE_NUM_KEYS_SIZE, INTERNAL_NODE_RIGHT_CHILD_OFFSET, INTERNAL_NODE_RIGHT_CHILD_SIZE, INVALID_PAGE_NUM, IS_ROOT_OFFSET, IS_ROOT_SIZE, LEAF_NODE_BODY_OFFSET, LEAF_NODE_NUM_CELLS_OFFSET, LEAF_NODE_NUM_CELLS_SIZE, NODE_TYPE_OFFSET, NODE_TYPE_SIZE, PAGE_SIZE, PARENT_POINTER_OFFSET, PARENT_POINTER_SIZE, TABLE_MAX_PAGES};
+use crate::storage_engine::config::{BtreeLeafNodeBodyLayout, INTERNAL_NODE_BODY_OFFSET, INTERNAL_NODE_CELL_SIZE, INTERNAL_NODE_CHILD_SIZE, INTERNAL_NODE_NUM_KEYS_OFFSET, INTERNAL_NODE_NUM_KEYS_SIZE, INTERNAL_NODE_RIGHT_CHILD_OFFSET, INTERNAL_NODE_RIGHT_CHILD_SIZE, INVALID_PAGE_NUM, IS_ROOT_OFFSET, IS_ROOT_SIZE, LEAF_NODE_BODY_OFFSET, LEAF_NODE_NUM_CELLS_OFFSET, LEAF_NODE_NUM_CELLS_SIZE, NODE_TYPE_OFFSET, NODE_TYPE_SIZE, PAGE_SIZE, PARENT_POINTER_OFFSET, PARENT_POINTER_SIZE, SEQUENTIAL_CELLS_NUM_SIZE, SEQUENTIAL_NODE_BODY_OFFSET, TABLE_MAX_PAGES};
 use crate::storage_engine::common::Page;
 use crate::storage_engine::enums::NodeType;
+use crate::utils::utils::copy;
 
 pub trait Pager {
     fn get_page(&self, page_index: usize) -> *const u8;
     fn get_or_create_page(&mut self, page_index: usize) -> *mut u8;
 }
 
-pub struct BtreePager {
+pub struct AbstractPager {
     pages: [Option<Page>; TABLE_MAX_PAGES],
-    updated: [bool; TABLE_MAX_PAGES],
-    fd: File,
-    size: usize,
     total_pages: usize,
-    btree_leaf_node_body_layout: BtreeLeafNodeBodyLayout,
+    fd: File
 }
 
-impl Pager for BtreePager{
+impl AbstractPager {
+    fn new(total_pages: usize, file: File) -> AbstractPager {
+        AbstractPager {
+            pages: [None; TABLE_MAX_PAGES],
+            total_pages,
+            fd: file
+        }
+    }
+}
+
+impl AbstractPager {
+    fn page_in_disk(&self, page_num: usize) -> bool {
+        self.total_pages > page_num
+    }
+
+    fn read_page_from_disk(&self, offset: u64) -> Page {
+        let mut bytes = [0; PAGE_SIZE];
+        self.fd.seek_read(&mut bytes, offset).unwrap();
+        bytes
+    }
+
+    fn flush_page_to_disk(&mut self, page_index: usize) -> bool {
+        let page: Option<&Page> = self.pages[page_index].as_ref();
+
+        if page.is_none() {
+            return false;
+        }
+
+        self.fd.seek(SeekFrom::Start((page_index * PAGE_SIZE) as u64)).unwrap();
+        self.fd.write(page.unwrap()).unwrap();
+        true
+    }
+}
+
+impl Pager for AbstractPager {
     fn get_page(&self, page_index: usize) -> *const u8 {
         if page_index > TABLE_MAX_PAGES {
             println!("Tried to fetch page number out of bounds. {} > {}\n", page_index, TABLE_MAX_PAGES);
@@ -30,6 +62,7 @@ impl Pager for BtreePager{
         }
         self.pages[page_index].unwrap().as_mut_ptr()
     }
+
 
     fn get_or_create_page(&mut self, page_index: usize) -> *mut u8 {
         if page_index > TABLE_MAX_PAGES {
@@ -53,6 +86,13 @@ impl Pager for BtreePager{
     }
 }
 
+pub struct BtreePager {
+    abstract_pager: AbstractPager,
+    updated: [bool; TABLE_MAX_PAGES],
+    size: usize,
+    btree_leaf_node_body_layout: BtreeLeafNodeBodyLayout,
+}
+
 impl BtreePager {
     pub(crate) fn open(key_size: usize, row_size: usize, file: File) -> BtreePager {
         let size = file.metadata().unwrap().len() as usize;
@@ -62,13 +102,19 @@ impl BtreePager {
         }
         let total_pages = size / PAGE_SIZE;
         BtreePager {
-            pages: [None; TABLE_MAX_PAGES],
-            fd: file,
+            abstract_pager: AbstractPager::new(total_pages, file),
             updated: [false; TABLE_MAX_PAGES],
             size,
-            total_pages,
             btree_leaf_node_body_layout: BtreeLeafNodeBodyLayout::new(key_size, row_size),
         }
+    }
+
+    pub(crate) fn get_or_create_page(&mut self, page_index: usize) -> *mut u8 {
+        self.abstract_pager.get_or_create_page(page_index)
+    }
+
+    pub(crate) fn get_page(&self, page_index: usize) -> *const u8 {
+        self.abstract_pager.get_page(page_index)
     }
 
     pub fn get_pager_total_size(&self) -> usize {
@@ -80,11 +126,11 @@ impl BtreePager {
     }
 
     pub(crate) fn get_unused_page_num(&self) -> usize {
-        self.total_pages
+        self.abstract_pager.total_pages
     }
 
     pub(crate) fn get_node_type_by_index(&mut self, page_index: usize) -> NodeType {
-        let page = self.get_or_create_page(page_index);
+        let page = self.abstract_pager.get_or_create_page(page_index);
         Self::get_node_type(page)
     }
 
@@ -358,7 +404,7 @@ impl BtreePager {
     pub fn get_node_biggest_key(&mut self, node: *const u8, key_type: &DataType) -> Value {
         match BtreePager::get_node_type(node) {
             NodeType::Internal => {
-                let right_child = self.get_or_create_page(BtreePager::get_internal_node_right_child(node));
+                let right_child = self.abstract_pager.get_or_create_page(BtreePager::get_internal_node_right_child(node));
                 self.get_node_biggest_key(right_child, key_type)
             }
             NodeType::Leaf => {
@@ -367,26 +413,8 @@ impl BtreePager {
         }
     }
 
-    fn read_page_from_disk(&self, offset: u64) -> Page {
-        let mut bytes = [0; PAGE_SIZE];
-        self.fd.seek_read(&mut bytes, offset).unwrap();
-        bytes
-    }
-
-    fn page_in_disk(&self, page_num: usize) -> bool {
-        self.total_pages > page_num
-    }
-
     pub(crate) fn flush_page_to_disk(&mut self, page_num: usize) -> bool {
-        let page: Option<&Page> = self.pages[page_num].as_ref();
-
-        if page.is_none() {
-            return false;
-        }
-
-        self.fd.seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64)).unwrap();
-        self.fd.write(page.unwrap()).unwrap();
-        true
+        self.abstract_pager.flush_page_to_disk(page_num)
     }
 
     pub(crate) fn mark_page_as_updated(&mut self, page_index: usize) {
@@ -436,11 +464,9 @@ impl BtreePager {
 }
 
 pub struct SequentialPager {
-    pages: [Option<Page>; TABLE_MAX_PAGES],
+    abstract_pager: AbstractPager,
     updated: [bool; TABLE_MAX_PAGES],
-    fd: File,
-    size: usize,
-    total_pages: usize,
+    size: usize
 }
 
 impl SequentialPager {
@@ -452,15 +478,65 @@ impl SequentialPager {
         }
         let total_pages = size / PAGE_SIZE;
         SequentialPager {
-            pages: [None; TABLE_MAX_PAGES],
-            fd: file,
+            abstract_pager: AbstractPager::new(total_pages, file),
             updated: [false; TABLE_MAX_PAGES],
-            size,
-            total_pages
+            size
         }
     }
 
     pub fn get_pager_total_size(&self) -> usize {
         self.size
+    }
+
+    pub fn get_num_cells(page: *const u8) -> usize {
+        unsafe {
+            let cells_num: usize = 0;
+            ptr::copy_nonoverlapping(
+                page,
+                &cells_num as *const usize as *mut u8,
+                SEQUENTIAL_CELLS_NUM_SIZE,
+            );
+            cells_num
+        }
+    }
+
+    pub(crate) fn get_or_create_page(&mut self, page_index: usize) -> *mut u8 {
+        self.abstract_pager.get_or_create_page(page_index)
+    }
+
+    pub(crate) fn get_page(&self, page_index: usize) -> *const u8 {
+        self.abstract_pager.get_page(page_index)
+    }
+
+    pub fn get_total_page(&self) -> usize {
+        self.abstract_pager.total_pages
+    }
+
+    pub(crate) fn get_row_value(&self, page: *mut u8, cell_index: usize, row_size: usize) -> *mut u8 {
+        unsafe {
+            page.add(SEQUENTIAL_NODE_BODY_OFFSET + cell_index * row_size)
+        }
+    }
+
+    pub fn flush_page_to_disk(&mut self, page_index: usize) -> bool {
+        self.abstract_pager.flush_page_to_disk(page_index)
+    }
+
+    pub fn increment_cells_num(&mut self, page_index: usize){
+        let page_ptr = self.get_or_create_page(page_index);
+        let mut cells_num: usize = 0;
+        unsafe {
+            ptr::copy_nonoverlapping(
+                page_ptr,
+                &mut cells_num as *mut usize as *mut u8,
+                SEQUENTIAL_CELLS_NUM_SIZE,
+            );
+            cells_num += 1;
+            ptr::copy_nonoverlapping(
+                &mut cells_num as *mut usize as *mut u8,
+                page_ptr,
+                SEQUENTIAL_CELLS_NUM_SIZE,
+            );
+        }
     }
 }
