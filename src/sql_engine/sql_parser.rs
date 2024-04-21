@@ -460,7 +460,7 @@ impl<'a> ValueParser<'a> {
             let value = self.parse()?;
 
             match value {
-                Value::Array(_) => return Err(String::from("An array must contain only primitive values. But array detected.")),
+                Value::ARRAY(_) => return Err(String::from("An array must contain only primitive values. But array detected.")),
                 Value::SelectStmt(_) => return Err(String::from("An array must contain only primitive values. But select statement detected.")),
                 _ => {}
             }
@@ -481,7 +481,7 @@ impl<'a> ValueParser<'a> {
         }
 
         self.sql_parser.advance(); // skip ']'
-        Ok(Value::Array(array))
+        Ok(Value::ARRAY(array))
     }
 
     fn parse_string(&mut self) -> Result<Value, String> {
@@ -492,7 +492,7 @@ impl<'a> ValueParser<'a> {
                 token.push(self.sql_parser.current_char());
             } else {
                 self.sql_parser.advance(); // skip '"'
-                return Ok(Value::String(token));
+                return Ok(Value::STRING(token));
             }
             self.sql_parser.advance();
         }
@@ -507,19 +507,19 @@ impl<'a> ValueParser<'a> {
             self.sql_parser.advance();
         }
         let mut result: Value = self.parse_int()?;
-        if let Value::Integer(first_part) = result {
+        if let Value::INTEGER(first_part) = result {
             if !self.sql_parser.is_end() && self.sql_parser.current_char() == '.' {
                 self.sql_parser.advance();
                 let mut base = 1.0;
-                if let Value::Integer(nb) = self.parse_int()? {
+                if let Value::INTEGER(nb) = self.parse_int()? {
                     let second_part = nb as f32;
                     while second_part / base > 1.0 {
                         base *= 10.0
                     }
-                    result = Value::Float(sign as f32 * (first_part as f32 + second_part / base))
+                    result = Value::FLOAT(sign as f32 * (first_part as f32 + second_part / base))
                 }
             } else {
-                result = Value::Integer(sign * first_part)
+                result = Value::INTEGER(sign * first_part)
             }
         }
         Ok(result)
@@ -528,10 +528,10 @@ impl<'a> ValueParser<'a> {
     pub(crate) fn parse_boolean(&mut self) -> Result<Value, String> {
         if self.sql_parser.starts_with("true") {
             self.sql_parser.position += "true".len();
-            return Ok(Value::Boolean(true));
+            return Ok(Value::BOOLEAN(true));
         } else if self.sql_parser.starts_with("false") {
             self.sql_parser.position += "false".len();
-            return Ok(Value::Boolean(false));
+            return Ok(Value::BOOLEAN(false));
         };
         Err(format!("Unknown type of value `{}` detected", self.sql_parser.read_token()?))
     }
@@ -544,7 +544,7 @@ impl<'a> ValueParser<'a> {
                     result = result * 10 + ValueParser::char_to_integer(self.sql_parser.current_char());
                     self.sql_parser.advance();
                 }
-                return Ok(Value::Integer(result));
+                return Ok(Value::INTEGER(result));
             }
             _ => Err(String::from("Integer parse failed"))
         }

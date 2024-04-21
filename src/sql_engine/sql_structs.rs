@@ -1,30 +1,12 @@
 use std::cmp::{Ordering, PartialEq, PartialOrd};
-use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::{fs, ptr};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use crate::sql_engine::sql_structs::LogicalOperator::{AND, OR};
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
-use crate::storage_engine::core::{Pager, Row, Table};
-
-const DATA_FOLDER: &str = "data";
-
-struct TableCache {
-    tables: HashMap<String, Table>
-}
-
-impl TableCache {
-    pub fn get_or_load_table(&mut self, path: &Path) -> &Table {
-        let path_str = String::from(path.to_str().unwrap());
-        if !self.tables.contains_key(&path_str) {
-            let pager = Pager::open(path_str.as_str());
-            let table = Table::new(pager);
-            self.tables.insert(path_str.clone(), table);
-        }
-
-        self.tables.get_mut(&path_str).unwrap()
-    }
-}
+use crate::storage_engine::config::{BOOLEAN_SIZE, DATA_FOLDER, FLOAT_SIZE, INTEGER_SIZE, TEXT_DEFAULT_SIZE};
+use crate::storage_engine::common::{FieldMetadata, HumanReadableRow, RowBytes};
+use crate::storage_engine::tables::{Table};
+use crate::utils::utils::{is_folder_empty, u8_array_to_string};
 
 pub(crate) trait Printable {
     fn print_stmt(&self) {}
@@ -33,7 +15,7 @@ pub(crate) trait Printable {
 pub(crate) enum SqlStmt {
     SELECT(SelectStmt),
     INSERT(InsertStmt),
-    CREATE(CreateStmt)
+    CREATE(CreateStmt),
 }
 
 impl Printable for SelectStmt {
@@ -47,7 +29,7 @@ impl Printable for SelectStmt {
 
 impl Printable for WhereExpr {
     fn print_stmt(&self) {
-        println!("{:?}", self.condition_exprs)
+        println!("{:?}", self.condition_cluster)
     }
 }
 
@@ -95,8 +77,8 @@ impl SelectStmt {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<Vec<Row>, String> {
-        let file = self.table_file()?;
+    pub(crate) fn execute(&self) -> Result<Vec<RowBytes>, String> {
+        /*let file = self.table_file()?;
         let pager = Pager::open_from(file);
         let mut table = Table::new(pager);
         let mut result = Vec::<Row>::new();
@@ -110,7 +92,8 @@ impl SelectStmt {
         if self.order_by_expr.is_some() {
             todo!()
         }
-        Ok(result)
+        Ok(result)*/
+        todo!()
     }
 }
 
@@ -140,23 +123,22 @@ impl InsertStmt {
         let files = fs::read_dir(&path).unwrap();
         for entry in files {
             let entry = entry.unwrap();
-
         }
         Ok(1)
     }
 
-    fn check_folder(&self, path:&Path) -> Result<(), String> {
+    fn check_folder(&self, path: &Path) -> Result<(), String> {
         match fs::metadata(path) {
             Ok(metadata) => {
                 if metadata.is_file() {
-                    return Err(format!("Can not load table '{}' from disk.", self.table))
+                    return Err(format!("Can not load table '{}' from disk.", self.table));
                 } else {
                     Ok(())
                 }
             }
             Err(_) => {
                 match fs::create_dir(path) {
-                    Ok(_) => {Ok(())}
+                    Ok(_) => { Ok(()) }
                     Err(_) => {
                         Err(format!("Can not create table '{}' in disk.", self.table))
                     }
@@ -165,88 +147,62 @@ impl InsertStmt {
         }
     }
 
-    fn check_data_file(&self){
+    fn check_data_file(&self) {
         let mut path = PathBuf::new();
         path.push(DATA_FOLDER);
         path.push(&self.table);
         if is_folder_empty(&path) {
             path.push(format!("{}_main", &self.table));
-            File::create(path);
+            let _ = File::create(path);
         }
     }
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct WhereExpr {
-    condition_exprs: Vec<(LogicalOperator, ConditionCluster)>,
+    condition_cluster: Vec<(LogicalOperator, ConditionCluster)>,
 }
 
 impl WhereExpr {
     pub(crate) fn new(condition_exprs: Vec<(LogicalOperator, ConditionCluster)>) -> WhereExpr {
         WhereExpr {
-            condition_exprs
+            condition_cluster: condition_exprs
         }
     }
 
-    fn execute(&self, table: &mut Table) -> Result<HashSet<Row>, String> {
-        let mut outer_set = HashSet::<Row>::new();
-        for (op, cluster) in &self.condition_exprs {
-            let set = Self::find_rows(cluster, table)?;
-            match op {
-                OR => outer_set.extend(set),
-                AND => outer_set.retain(|r| set.contains(r))
-            }
-        }
-        Ok(outer_set)
-    }
-
-    fn find_rows(condition_cluster: &ConditionCluster, table: &mut Table) -> Result<HashSet<Row>, String> {
-        let mut set: HashSet<Row> = HashSet::<Row>::new();
-        for condition in &condition_cluster.conditions {
-            let result = table.table_find_by_value(&condition.field, &condition.operator, &condition.value)?;
-            match condition.logical_operator {
-                OR => {
-                    result.into_iter().for_each(|r| {
-                        set.insert(r);
-                    });
-                }
-                AND => {
-                    set.retain(|e| result.contains(e));
-                }
-            };
-        }
-        Ok(set)
+    fn execute(&self, table: &mut Box<dyn Table>) -> Vec<RowBytes> {
+        table.find_by_condition_clusters(&self.condition_cluster)
     }
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct CreateStmt {
     table: String,
-    definitions: Vec<FieldDefinition>
+    definitions: Vec<FieldDefinition>,
 }
 
 impl CreateStmt {
     pub(crate) fn new(table: String, definitions: Vec<FieldDefinition>) -> CreateStmt {
         CreateStmt {
             table,
-            definitions
+            definitions,
         }
     }
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct FieldDefinition {
-    field: String,
-    data_type: DataType,
-    is_primary_key: bool
+    pub field_name: String,
+    pub data_type: DataType,
+    pub is_primary_key: bool,
 }
 
 impl FieldDefinition {
     pub fn new(field: String, data_type: DataType, is_primary_key: bool) -> FieldDefinition {
         FieldDefinition {
-            field,
+            field_name: field,
             data_type,
-            is_primary_key
+            is_primary_key,
         }
     }
 
@@ -257,7 +213,7 @@ impl FieldDefinition {
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct IndexCreationStmt {
-    field: String
+    field: String,
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
@@ -290,7 +246,7 @@ impl OrderByExpr {
 
 #[derive(PartialEq, Debug, PartialOrd)]
 pub(crate) struct ConditionCluster {
-    conditions: Vec<ConditionExpr>,
+    pub conditions: Vec<ConditionExpr>,
 }
 
 impl ConditionCluster {
@@ -356,16 +312,36 @@ pub(crate) enum LogicalOperator {
     AND,
 }
 
+impl LogicalOperator {
+    pub fn operate(&self, b1: bool, b2: bool) -> bool {
+        match self {
+            LogicalOperator::OR => { b1 | b2 }
+            LogicalOperator::AND => { b1 & b2 }
+        }
+    }
+
+    pub fn is_and(&self) -> bool {
+        match self {
+            LogicalOperator::OR => { false }
+            LogicalOperator::AND => { true }
+        }
+    }
+
+    pub fn is_or(&self) -> bool {
+        !self.is_and()
+    }
+}
+
 impl TryFrom<&str> for LogicalOperator {
     type Error = &'static str;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
             "or" => {
-                Ok(OR)
+                Ok(LogicalOperator::OR)
             }
             "and" => {
-                Ok(AND)
+                Ok(LogicalOperator::AND)
             }
             _ => { Err("Unknown logical operator.") }
         }
@@ -381,7 +357,7 @@ impl Operator {
             LT => { a < b }
             LTE => { a <= b }
             IN(negative) => {
-                if let Value::Array(vec) = b {
+                if let Value::ARRAY(vec) = b {
                     vec.contains(&a) ^ negative
                 } else {
                     false
@@ -429,24 +405,24 @@ impl TryFrom<String> for Operator {
 
 #[derive(Debug)]
 pub(crate) enum Value {
-    Integer(i32),
-    Float(f32),
-    Boolean(bool),
-    String(String),
-    Array(Vec<Value>),
+    INTEGER(i32),
+    FLOAT(f32),
+    BOOLEAN(bool),
+    STRING(String),
+    ARRAY(Vec<Value>),
     SelectStmt(SelectStmt),
 }
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match self {
-            Value::Integer(i) => { *i == other.unwrap_into_int().unwrap() }
-            Value::Float(f) => { *f == other.unwrap_into_float().unwrap() }
-            Value::Boolean(b) => { *b == other.unwrap_into_bool().unwrap() }
-            Value::String(s) => {
+            Value::INTEGER(i) => { *i == other.unwrap_into_int().unwrap() }
+            Value::FLOAT(f) => { *f == other.unwrap_into_float().unwrap() }
+            Value::BOOLEAN(b) => { *b == other.unwrap_into_bool().unwrap() }
+            Value::STRING(s) => {
                 s == other.unwrap_as_string().unwrap()
             }
-            Value::Array(a) => { a == other.unwrap_as_array().unwrap() }
+            Value::ARRAY(a) => { a == other.unwrap_as_array().unwrap() }
             Value::SelectStmt(s) => { other.is_select_stmt() }
         }
     }
@@ -455,11 +431,11 @@ impl PartialEq for Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self {
-            Value::Integer(i) => { i.partial_cmp(&other.unwrap_into_int().unwrap()) }
-            Value::Float(f) => { f.partial_cmp(&other.unwrap_into_float().unwrap()) }
-            Value::Boolean(b) => { b.partial_cmp(&other.unwrap_into_bool().unwrap()) }
-            Value::String(s) => { s.partial_cmp(&other.unwrap_as_string().unwrap()) }
-            Value::Array(a) => { None }
+            Value::INTEGER(i) => { i.partial_cmp(&other.unwrap_into_int().unwrap()) }
+            Value::FLOAT(f) => { f.partial_cmp(&other.unwrap_into_float().unwrap()) }
+            Value::BOOLEAN(b) => { b.partial_cmp(&other.unwrap_into_bool().unwrap()) }
+            Value::STRING(s) => { s.partial_cmp(&other.unwrap_as_string().unwrap()) }
+            Value::ARRAY(a) => { None }
             Value::SelectStmt(s) => { None }
         }
     }
@@ -468,19 +444,19 @@ impl PartialOrd for Value {
 impl Value {
     pub(crate) fn are_same_variant(a: &Value, b: &Value) -> bool {
         match (a, b) {
-            (Value::Integer(_), Value::Integer(_)) => {
+            (Value::INTEGER(_), Value::INTEGER(_)) => {
                 true
             }
-            (Value::Float(_), Value::Float(_)) => {
+            (Value::FLOAT(_), Value::FLOAT(_)) => {
                 true
             }
-            (Value::String(_), Value::String(_)) => {
+            (Value::STRING(_), Value::STRING(_)) => {
                 true
             }
-            (Value::Array(_), Value::Array(_)) => {
+            (Value::ARRAY(_), Value::ARRAY(_)) => {
                 true
             }
-            (Value::Boolean(_), Value::Boolean(_)) => {
+            (Value::BOOLEAN(_), Value::BOOLEAN(_)) => {
                 true
             }
             (Value::SelectStmt(_), Value::SelectStmt(_)) => {
@@ -494,35 +470,35 @@ impl Value {
 
     pub fn unwrap_into_int(&self) -> Result<i32, &str> {
         match self {
-            Value::Integer(v) => Ok(*v),
+            Value::INTEGER(v) => Ok(*v),
             _ => Err("Current Value is not an Integer.")
         }
     }
 
     pub fn unwrap_into_float(&self) -> Result<f32, &str> {
         match self {
-            Value::Float(v) => Ok(*v),
+            Value::FLOAT(v) => Ok(*v),
             _ => Err("Current Value is not a Float.")
         }
     }
 
     pub fn unwrap_as_string(&self) -> Result<&String, &str> {
         match self {
-            Value::String(v) => Ok(v),
+            Value::STRING(v) => Ok(v),
             _ => Err("Current Value is not a String.")
         }
     }
 
     pub fn unwrap_as_array(&self) -> Result<&Vec<Value>, &str> {
         match self {
-            Value::Array(v) => Ok(v),
+            Value::ARRAY(v) => Ok(v),
             _ => Err("Current Value is not an Array.")
         }
     }
 
     pub fn unwrap_into_bool(&self) -> Result<bool, &str> {
         match self {
-            Value::Boolean(v) => Ok(*v),
+            Value::BOOLEAN(v) => Ok(*v),
             _ => Err("Current Value is not a Boolean.")
         }
     }
@@ -533,9 +509,67 @@ impl Value {
             _ => false
         }
     }
+
+    pub fn from_bytes(key_type: &DataType, bytes: &[u8]) -> Value {
+        Self::from_ptr(key_type, bytes.as_ptr())
+    }
+
+    pub fn from_ptr(key_type: &DataType, src: *const u8) -> Value {
+        unsafe {
+            match key_type {
+                DataType::TEXT(size) => {
+                    let mut bytes = Vec::<u8>::with_capacity(*size);
+                    ptr::copy_nonoverlapping(src, bytes.as_mut_ptr(), *size);
+                    Value::STRING(u8_array_to_string(bytes.as_slice()))
+                }
+                DataType::INTEGER => {
+                    let key: i32 = 0;
+                    ptr::copy_nonoverlapping(src, &key as *const i32 as *mut u8, key_type.get_size());
+                    Value::INTEGER(key)
+                }
+                DataType::FLOAT => {
+                    let key: f32 = 0.0;
+                    ptr::copy_nonoverlapping(src, &key as *const f32 as *mut u8, key_type.get_size());
+                    Value::FLOAT(key)
+                }
+                DataType::BOOLEAN => {
+                    let key: bool = false;
+                    ptr::copy_nonoverlapping(src, &key as *const bool as *mut u8, key_type.get_size());
+                    Value::BOOLEAN(key)
+                }
+            }
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            Value::INTEGER(i) => { i.to_string() }
+            Value::FLOAT(f) => { f.to_string() }
+            Value::BOOLEAN(b) => {
+                b.to_string()
+            }
+            Value::STRING(s) => {
+                s.to_string()
+            }
+            Value::ARRAY(a) => {
+                let mut s = String::new();
+                s.push('[');
+                a.iter().for_each(|v| {
+                    s.push_str(&v.to_string());
+                    s.push_str(",")
+                });
+                s.remove(s.len() - 1);
+                s.push(']');
+                s
+            }
+            Value::SelectStmt(_) => {
+                String::new()
+            }
+        }
+    }
 }
 
-#[derive(PartialEq, PartialOrd, Debug)]
+#[derive(PartialEq, PartialOrd, Debug, Copy, Clone)]
 pub enum DataType {
     TEXT(usize),
     INTEGER,
@@ -543,18 +577,32 @@ pub enum DataType {
     BOOLEAN,
 }
 
-fn is_folder_empty(folder_path: &Path) -> bool {
-    match fs::read_dir(folder_path) {
-        Ok(entries) => {
-            for entry in entries {
-                if let Ok(_) = entry {
-                    return false;
-                }
-            }
-            true
+impl DataType {
+    pub fn to_bit_code(&self) -> u8 {
+        match self {
+            DataType::TEXT(_) => { 0b0000_0000 }
+            DataType::INTEGER => { 0b0000_0001 }
+            DataType::FLOAT => { 0b0000_0010 }
+            DataType::BOOLEAN => { 0b0000_0011 }
         }
-        Err(_) => {
-            true
+    }
+
+    pub fn from_bit_code(bit_code: u8) -> Result<DataType, String> {
+        match bit_code {
+            0b0000_0000 => { Ok(DataType::TEXT(TEXT_DEFAULT_SIZE)) }
+            0b0000_0001 => { Ok(DataType::INTEGER) }
+            0b0000_0010 => { Ok(DataType::FLOAT) }
+            0b0000_0011 => { Ok(DataType::BOOLEAN) }
+            _ => { Err(format!("Unknown bit code {}", bit_code)) }
+        }
+    }
+
+    pub fn get_size(&self) -> usize {
+        match self {
+            DataType::TEXT(size) => { *size }
+            DataType::INTEGER => { INTEGER_SIZE }
+            DataType::FLOAT => { FLOAT_SIZE }
+            DataType::BOOLEAN => { BOOLEAN_SIZE }
         }
     }
 }
