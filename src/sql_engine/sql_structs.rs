@@ -1,12 +1,14 @@
 use std::cmp::{Ordering, PartialEq, PartialOrd};
 use std::{fs, ptr};
 use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use crate::build_path;
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
-use crate::storage_engine::config::{BOOLEAN_SIZE, DATA_FOLDER, FLOAT_SIZE, INTEGER_SIZE, TEXT_DEFAULT_SIZE};
-use crate::storage_engine::common::{FieldMetadata, HumanReadableRow, RowBytes};
+use crate::storage_engine::config::{BOOLEAN_SIZE, DATA_FOLDER, FIELD_NAME_SIZE, FIELD_NUMBER_SIZE, FIELD_TYPE_PRIMARY_SIZE, FLOAT_SIZE, INTEGER_SIZE, TEXT_DEFAULT_SIZE, TEXT_CHARS_NUM_SIZE};
+use crate::storage_engine::common::{RowBytes};
 use crate::storage_engine::tables::{Table};
-use crate::utils::utils::{is_folder_empty, u8_array_to_string};
+use crate::utils::utils::{copy, is_folder_empty, ToU8, u8_array_to_string};
 
 pub(crate) trait Printable {
     fn print_stmt(&self) {}
@@ -188,6 +190,66 @@ impl CreateStmt {
             definitions,
         }
     }
+
+    pub fn execute(&self) -> Result<(), String> {
+        let table_name = self.table.as_str();
+        let frm_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
+
+        if Path::new(&frm_path).exists() {
+            return Err(format!("Table {} already exists.", table_name));
+        }
+
+        match File::create(frm_path) {
+            Ok(file) => {
+                self.write_metadata(file)
+            }
+            Err(_) => {
+                return Err(String::from("Can not open create table."));
+            }
+        }
+    }
+
+    fn write_metadata(&self, mut file: File) -> Result<(), String> {
+        let mut total_size = 0;
+        total_size += FIELD_NUMBER_SIZE;
+        total_size += self.definitions.len() * FIELD_NAME_SIZE;
+        total_size += self.definitions.len() * FIELD_TYPE_PRIMARY_SIZE;
+
+        let text_fields = self.definitions.iter().filter(|d| d.data_type.is_text()).count();
+        total_size += text_fields * TEXT_CHARS_NUM_SIZE;
+
+        let mut vec = Vec::<u8>::with_capacity(total_size);
+        let buf = vec.as_mut_ptr();
+        let mut buf_pointer = 0; // pointer that points to the position where we should start reading
+
+        copy(self.definitions.len() as *const u8, buf, FIELD_NUMBER_SIZE);
+        buf_pointer += FIELD_NUMBER_SIZE;
+
+        self.definitions.iter().for_each(|field_definition| unsafe {
+            copy(field_definition.field_name.as_ptr(), buf.add(buf_pointer), FIELD_NAME_SIZE);
+            buf_pointer += FIELD_NAME_SIZE;
+            let data_type_primary: u8 = (field_definition.data_type.to_bit_code() << 1) | field_definition.is_primary_key.to_u8();
+            copy(data_type_primary as *mut u8, buf.add(buf_pointer), FIELD_TYPE_PRIMARY_SIZE);
+            buf_pointer += FIELD_TYPE_PRIMARY_SIZE;
+            match field_definition.data_type {
+                DataType::TEXT(size) => {
+                    copy(size as *const usize as *mut u8, buf.add(buf_pointer), TEXT_CHARS_NUM_SIZE);
+                    buf_pointer += TEXT_CHARS_NUM_SIZE;
+                }
+                _ => {}
+            }
+        });
+
+        unsafe {
+            vec.set_len(total_size);
+        }
+
+        if file.write(vec.as_slice()).is_err() {
+            return Err(format!("Can not write metadata for table {}!", self.table));
+        };
+        Ok(())
+    }
+
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
@@ -578,6 +640,12 @@ pub enum DataType {
 }
 
 impl DataType {
+    pub fn is_text(&self) -> bool {
+        match self {
+            DataType::TEXT(_) => {true}
+            _ => {false}
+        }
+    }
     pub fn to_bit_code(&self) -> u8 {
         match self {
             DataType::TEXT(_) => { 0b0000_0000 }

@@ -5,7 +5,7 @@ use std::ptr::null_mut;
 use crate::sql_engine::sql_structs::{ConditionCluster, ConditionExpr, DataType, LogicalOperator, Value};
 use crate::storage_engine::config::{BTREE_METADATA_SIZE, INDEXED_FIELD_NAME_SIZE, INDEXED_FIELD_NAME_SIZE_OFFSET, INDEXED_FIELD_SIZE, INDEXED_FIELD_SIZE_OFFSET, INDEXED_FIELD_TYPE_PRIMARY, INTERNAL_NODE_CELL_SIZE, INTERNAL_NODE_MAX_KEYS, INVALID_PAGE_NUM, PAGE_SIZE, SEQUENTIAL_NODE_BODY_OFFSET, SEQUENTIAL_NODE_HEADER_SIZE, TABLE_MAX_PAGES};
 use crate::storage_engine::common::{RowBytes, TableStructureMetadata};
-use crate::storage_engine::cursor::{Cursor, ReadCursor, WriteReadCursor};
+use crate::storage_engine::cursor::{ReadCursor, WriteReadCursor};
 use crate::storage_engine::enums::NodeType;
 use crate::storage_engine::pagers::{BtreePager, Pager, SequentialPager};
 use crate::utils::utils::{copy, copy_nonoverlapping, indent, u8_array_to_string};
@@ -606,7 +606,7 @@ pub struct SequentialTable {
 
 impl SequentialTable {
     pub(crate) fn new(path: &str, table_metadata: &'static TableStructureMetadata) -> Result<SequentialTable, String> {
-        match OpenOptions::new().create(true).read(true).write(true).open(path) {
+        match File::open(path) {
             Ok(file) => {
                 let pager = SequentialPager::open(file);
                 Ok(SequentialTable {

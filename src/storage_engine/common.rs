@@ -7,19 +7,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use crate::build_path;
 use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Value};
-use crate::utils::utils::{copy, u8_array_to_string};
+use crate::utils::utils::{copy, ToU8, u8_array_to_string};
 use crate::storage_engine::config::*;
 use crate::storage_engine::tables::{BtreeTable, Table};
-
-trait ToU8 {
-    fn to_u8(&self) -> u8;
-}
-
-impl ToU8 for bool {
-    fn to_u8(&self) -> u8 {
-        if *self { 1 } else { 0 }
-    }
-}
 
 pub struct TableManager {
     tables: HashMap<String, Box<dyn Table>>,
@@ -84,64 +74,6 @@ impl TableManager {
         }
     }
 
-    pub fn create_table(&self, table_name: &str, field_definitions: &Vec<FieldDefinition>) -> Result<(), String> {
-        let frm_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
-
-        if Path::new(&frm_path).exists() {
-            return Err(format!("Table {} already exists.", table_name));
-        }
-
-        match File::create(frm_path) {
-            Ok(mut file) => {
-                Self::write_metadata(&mut file, table_name, field_definitions)
-            }
-            Err(_) => {
-                return Err(String::from("Can not open create table."));
-            }
-        }
-    }
-
-    fn write_metadata(fd: &mut File, table_name: &str, field_definitions: &Vec<FieldDefinition>) -> Result<(), String> {
-        let mut total_size = 0;
-        total_size += FIELD_NUMBER_SIZE;
-        total_size += field_definitions.len() * FIELD_NAME_SIZE;
-        total_size += field_definitions.len() * FIELD_TYPE_PRIMARY;
-
-        field_definitions.iter().for_each(|field_definition| {
-            total_size += field_definition.data_type.get_size();
-        });
-
-        let mut vec = Vec::<u8>::with_capacity(total_size);
-        let buf = vec.as_mut_ptr();
-        let mut buf_pointer = 0; // pointer that points to the position where we should start reading
-
-        copy(field_definitions.len() as *const u8, buf, FIELD_NUMBER_SIZE);
-        buf_pointer += FIELD_NUMBER_SIZE;
-
-        field_definitions.iter().for_each(|field_definition| unsafe {
-            copy(field_definition.field_name.as_ptr(), buf.add(buf_pointer), FIELD_NAME_SIZE);
-            buf_pointer += FIELD_NAME_SIZE;
-            let data_type_primary: u8 = (field_definition.data_type.to_bit_code() << 1) | field_definition.is_primary_key.to_u8();
-            copy(data_type_primary as *mut u8, buf.add(buf_pointer), FIELD_TYPE_PRIMARY);
-            buf_pointer += FIELD_TYPE_PRIMARY;
-            match field_definition.data_type {
-                DataType::TEXT(size) => {
-                    copy(size as *const usize as *mut u8, buf.add(buf_pointer), TEXT_SIZE);
-                    buf_pointer += TEXT_SIZE;
-                }
-                _ => {}
-            }
-        });
-
-        unsafe {
-            vec.set_len(total_size);
-        }
-
-        if fd.write(vec.as_slice()).is_err() {
-            return Err(format!("Can not write metadata for table {}!", table_name));
-        };
-        Ok(())
-    }
 
     unsafe fn load_metadata(path: &Path) -> Result<HashMap<String, FieldMetadata>, String> {
         let metadata = fs::read(path).unwrap();
@@ -160,16 +92,16 @@ impl TableManager {
 
         for _ in 0..fields_number {
             let field_type_primary: u8 = 0;
-            copy(ptr.add(metadata_pointer), field_type_primary as *mut u8, FIELD_TYPE_PRIMARY);
-            metadata_pointer += FIELD_TYPE_PRIMARY;
+            copy(ptr.add(metadata_pointer), field_type_primary as *mut u8, FIELD_TYPE_PRIMARY_SIZE);
+            metadata_pointer += FIELD_TYPE_PRIMARY_SIZE;
 
             let data_type_bit_code = (field_type_primary >> 1) | data_type_mask;
             let mut size: usize = 0;
 
             let data_type = match DataType::from_bit_code(data_type_bit_code)? {
                 DataType::TEXT(_) => {
-                    copy(ptr.add(metadata_pointer), size as *const usize as *mut u8, TEXT_SIZE);
-                    metadata_pointer += TEXT_SIZE;
+                    copy(ptr.add(metadata_pointer), size as *const usize as *mut u8, TEXT_CHARS_NUM_SIZE);
+                    metadata_pointer += TEXT_CHARS_NUM_SIZE;
                     DataType::TEXT(size)
                 }
                 DataType::INTEGER => {
