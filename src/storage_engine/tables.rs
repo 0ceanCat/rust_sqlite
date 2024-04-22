@@ -645,7 +645,7 @@ impl SequentialTable {
 
         copy_nonoverlapping(row_ptr.add(field_meta.offset), buf.as_mut_ptr(), field_meta.size);
         buf.set_len(field_meta.size);
-        let value = Value::from_ptr(&field_meta.data_type, buf.as_ptr());
+        let value = Value::from_ptr(&field_meta.data_def.data_type, buf.as_ptr());
         buf.clear();
 
         condition_expr.operator.operate(&value, &condition_expr.value)

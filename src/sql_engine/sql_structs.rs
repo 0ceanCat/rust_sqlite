@@ -8,7 +8,7 @@ use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 use crate::storage_engine::config::{BOOLEAN_SIZE, DATA_FOLDER, FIELD_NAME_SIZE, FIELD_NUMBER_SIZE, FIELD_TYPE_PRIMARY_SIZE, FLOAT_SIZE, INTEGER_SIZE, TEXT_DEFAULT_SIZE, TEXT_CHARS_NUM_SIZE};
 use crate::storage_engine::common::{RowBytes};
 use crate::storage_engine::tables::{Table};
-use crate::utils::utils::{copy, is_folder_empty, ToU8, u8_array_to_string};
+use crate::utils::utils::{is_folder_empty, ToU8, u8_array_to_string};
 
 pub(crate) trait Printable {
     fn print_stmt(&self) {}
@@ -193,23 +193,29 @@ impl CreateStmt {
 
     pub fn execute(&self) -> Result<(), String> {
         let table_name = self.table.as_str();
-        let frm_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
+        let frm_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".frm");
 
         if Path::new(&frm_path).exists() {
             return Err(format!("Table {} already exists.", table_name));
+        } else {
+            let dir = build_path!(DATA_FOLDER, table_name);
+            match fs::create_dir_all(dir) {
+                Ok(_) => {}
+                Err(_) => {return Err(String::from("Can not create dir."));}
+            };
         }
 
         match File::create(frm_path) {
             Ok(file) => {
-                self.write_metadata(file)
+                unsafe {self.write_metadata(file)}
             }
-            Err(_) => {
-                return Err(String::from("Can not open create table."));
+            Err(e) => {
+                return Err(String::from("Can not create table."));
             }
         }
     }
 
-    fn write_metadata(&self, mut file: File) -> Result<(), String> {
+    unsafe fn write_metadata(&self, mut file: File) -> Result<(), String> {
         let mut total_size = 0;
         total_size += FIELD_NUMBER_SIZE;
         total_size += self.definitions.len() * FIELD_NAME_SIZE;
@@ -218,31 +224,27 @@ impl CreateStmt {
         let text_fields = self.definitions.iter().filter(|d| d.data_type.is_text()).count();
         total_size += text_fields * TEXT_CHARS_NUM_SIZE;
 
-        let mut vec = Vec::<u8>::with_capacity(total_size);
+        let mut vec = vec![0; total_size];
         let buf = vec.as_mut_ptr();
         let mut buf_pointer = 0; // pointer that points to the position where we should start reading
 
-        copy(self.definitions.len() as *const u8, buf, FIELD_NUMBER_SIZE);
+        ptr::copy_nonoverlapping(&self.definitions.len() as *const usize as *const u8, buf, FIELD_NUMBER_SIZE);
         buf_pointer += FIELD_NUMBER_SIZE;
 
-        self.definitions.iter().for_each(|field_definition| unsafe {
-            copy(field_definition.field_name.as_ptr(), buf.add(buf_pointer), FIELD_NAME_SIZE);
+        self.definitions.iter().for_each(|field_definition| {
+            ptr::copy_nonoverlapping(field_definition.field_name.as_ptr(), buf.add(buf_pointer), field_definition.field_name.len());
             buf_pointer += FIELD_NAME_SIZE;
             let data_type_primary: u8 = (field_definition.data_type.to_bit_code() << 1) | field_definition.is_primary_key.to_u8();
-            copy(data_type_primary as *mut u8, buf.add(buf_pointer), FIELD_TYPE_PRIMARY_SIZE);
+            ptr::copy_nonoverlapping(&data_type_primary as *const u8, buf.add(buf_pointer), FIELD_TYPE_PRIMARY_SIZE);
             buf_pointer += FIELD_TYPE_PRIMARY_SIZE;
             match field_definition.data_type {
                 DataType::TEXT(size) => {
-                    copy(size as *const usize as *mut u8, buf.add(buf_pointer), TEXT_CHARS_NUM_SIZE);
+                    ptr::copy_nonoverlapping(&size as *const usize as *const u8, buf.add(buf_pointer), TEXT_CHARS_NUM_SIZE);
                     buf_pointer += TEXT_CHARS_NUM_SIZE;
                 }
                 _ => {}
             }
         });
-
-        unsafe {
-            vec.set_len(total_size);
-        }
 
         if file.write(vec.as_slice()).is_err() {
             return Err(format!("Can not write metadata for table {}!", self.table));

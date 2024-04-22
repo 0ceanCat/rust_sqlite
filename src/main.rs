@@ -9,7 +9,8 @@ use crate::sql_engine::sql_structs::SqlStmt;
 use crate::storage_engine::common::*;
 
 fn main() -> Result<(), String> {
-    /*let mut table_manager = TableManager::new();
+    let mut table_manager = TableManager::new();
+    let x = table_manager.get_table_metadata("user")?;
     loop {
         let input = new_input_buffer();
 
@@ -24,19 +25,16 @@ fn main() -> Result<(), String> {
             SqlStmt::SELECT(select) => {
                 let result = select.execute()?;
                 for row in result {
-                    println!("[id:{}, username:{}, email:{}]", row.id, String::from_utf8_lossy(row.username.as_slice()), String::from_utf8_lossy(row.email.as_slice()));
+                    //println!("[id:{}, username:{}, email:{}]", row.id, String::from_utf8_lossy(row.username.as_slice()), String::from_utf8_lossy(row.email.as_slice()));
                 }
             }
             SqlStmt::INSERT(insert) => {
                 println!("{:?}", insert.execute()?);
             }
             SqlStmt::CREATE(create) => {
-                println!("{:?}", create);
+                println!("{:?}", create.execute()?);
             }
         }
-    }*/
-    let a = 0b0000_0110;
-    let b = (a >> 1) | 0;
-    println!("{}", b);
+    }
     Ok(())
 }
