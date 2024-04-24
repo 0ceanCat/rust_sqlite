@@ -2,14 +2,15 @@ extern crate core;
 
 use std::fs::{File};
 use std::io::{Read, Write};
-use std::{fs, ptr};
+use std::{fs, ptr, vec};
 use std::collections::HashMap;
+use std::iter::once;
 use std::path::{Path, PathBuf};
 use crate::build_path;
 use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Value};
-use crate::utils::utils::{copy, u8_array_to_string};
+use crate::utils::utils::{copy, list_files_of_folder, u8_array_to_string};
 use crate::storage_engine::config::*;
-use crate::storage_engine::tables::{BtreeTable, Table};
+use crate::storage_engine::tables::{BtreeTable, SequentialTable, Table};
 
 trait ToU8 {
     fn to_u8(&self) -> u8;
@@ -22,26 +23,42 @@ impl ToU8 for bool {
 }
 
 pub struct TableManager {
-    tables: HashMap<String, Box<dyn Table>>,
-    metadata: HashMap<String, TableStructureMetadata>,
+    tables: HashMap<String, (TableStructureMetadata , Vec<(Box<dyn Table>)>)>,
 }
 
 impl TableManager {
     pub fn new() -> TableManager {
         TableManager {
             tables: HashMap::new(),
-            metadata: HashMap::new(),
         }
     }
 
-    pub fn get_or_load_table(&mut self, table_name: &str, path: &Path) -> Result<&mut Box<dyn Table>, String> {
-        let path_str = String::from(path.to_str().unwrap());
-        if !self.tables.contains_key(&path_str) {
-            let table = BtreeTable::new(path_str.as_str(), self.get_table_metadata(table_name)?)?;
-            self.tables.insert(path_str.clone(), Box::new(table));
+    pub fn register_new_table(&mut self, storage_file: &str) {
+
+    }
+
+    pub fn get_or_load_tables(&mut self, table_name: &str) -> Result<&Vec<Box<dyn Table>>, String> {
+        if !self.tables.contains_key(table_name) {
+            let table_meta = self.load_metadata(table_name)?;
+
+            let storage_files = list_files_of_folder(&build_path!(DATA_FOLDER, table_name))?;
+            let mut tables = Vec::<Box<dyn Table>>::new();
+
+            for (file_name, path) in storage_files {
+                let file_name = file_name.into_string().unwrap();
+                let index = file_name.ends_with(".idx");
+                let table: Box<dyn Table> = if index {
+                    Box::new(BtreeTable::new(&path, file_name, &table_meta)?)
+                } else {
+                    Box::new(SequentialTable::new(&path, file_name, &table_meta)?)
+                };
+                tables.push(table);
+            }
+            self.tables.insert(table_name.to_string(), (table_meta, tables));
         }
 
-        Ok(self.tables.get_mut(&path_str).unwrap())
+        let result: &(TableStructureMetadata, Vec<Box<dyn Table>>) = self.tables.get(table_name).unwrap();
+        Ok(&result.1)
     }
 
     pub fn is_field_of_table(&mut self, table_name: &str, field_name: &str) -> bool {
@@ -49,29 +66,25 @@ impl TableManager {
     }
 
     pub fn get_field_metadata(&mut self, table_name: &str, field_name: &str) -> Result<&FieldMetadata, String> {
-        let map = self.get_or_load_metadata(table_name)?;
-
-        map.get_field_metadata(field_name)
+        let map = self.load_metadata(table_name)?;
+        todo!()
     }
 
     pub fn get_table_metadata(&mut self, table_name: &str) -> Result<&TableStructureMetadata, String> {
-        let map = self.get_or_load_metadata(table_name)?;
-        Ok(map)
+        let map = self.load_metadata(table_name)?;
+        todo!()
     }
 
-    fn get_or_load_metadata(&mut self, table_name: &str) -> Result<&TableStructureMetadata, String> {
+    fn load_metadata(&mut self, table_name: &str) -> Result<TableStructureMetadata, String> {
         let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
-        if !self.metadata.contains_key(table_name) {
-            let metadata = unsafe { Self::load_metadata(&path)? };
-            self.metadata.insert(String::from(table_name), TableStructureMetadata::new(table_name, metadata));
-        }
-
-        Ok(self.metadata.get(table_name).unwrap())
+        let metadata = unsafe { Self::load_metadata_from_disk(&path)? };
+        let tm = TableStructureMetadata::new(table_name, metadata);
+        Ok(tm)
     }
 
     pub fn flash_to_disk(&mut self) {
         for table in self.tables.values_mut() {
-            table.flush_to_disk();
+            //table.flush_to_disk();
         }
     }
 
@@ -79,7 +92,7 @@ impl TableManager {
         match self.tables.get_mut(table_name) {
             None => {}
             Some(table) => {
-                table.print_tree(0, 0)
+               // table.print_tree(0, 0)
             }
         }
     }
@@ -143,7 +156,7 @@ impl TableManager {
         Ok(())
     }
 
-    unsafe fn load_metadata(path: &Path) -> Result<HashMap<String, FieldMetadata>, String> {
+    unsafe fn load_metadata_from_disk(path: &Path) -> Result<HashMap<String, FieldMetadata>, String> {
         let metadata = fs::read(path).unwrap();
 
         let mut metadata_pointer = 0; // pointer that points to the position where we should start reading
