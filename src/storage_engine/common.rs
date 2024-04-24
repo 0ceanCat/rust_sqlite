@@ -2,10 +2,10 @@ extern crate core;
 
 use std::fs::{File};
 use std::io::{Read, Write};
-use std::{fs, ptr, vec};
+use std::{fs, ptr};
 use std::collections::HashMap;
-use std::iter::once;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use crate::build_path;
 use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Value};
 use crate::utils::utils::{copy, list_files_of_folder, u8_array_to_string};
@@ -23,7 +23,7 @@ impl ToU8 for bool {
 }
 
 pub struct TableManager {
-    tables: HashMap<String, (TableStructureMetadata , Vec<(Box<dyn Table>)>)>,
+    tables: HashMap<String, (Rc<TableStructureMetadata> , Vec<(Box<dyn Table>)>)>,
 }
 
 impl TableManager {
@@ -39,8 +39,7 @@ impl TableManager {
 
     pub fn get_or_load_tables(&mut self, table_name: &str) -> Result<&Vec<Box<dyn Table>>, String> {
         if !self.tables.contains_key(table_name) {
-            let table_meta = self.load_metadata(table_name)?;
-
+            let table_meta = Rc::new(self.load_metadata(table_name)?);
             let storage_files = list_files_of_folder(&build_path!(DATA_FOLDER, table_name))?;
             let mut tables = Vec::<Box<dyn Table>>::new();
 
@@ -48,16 +47,16 @@ impl TableManager {
                 let file_name = file_name.into_string().unwrap();
                 let index = file_name.ends_with(".idx");
                 let table: Box<dyn Table> = if index {
-                    Box::new(BtreeTable::new(&path, file_name, &table_meta)?)
+                    Box::new(BtreeTable::new(&path, file_name, Rc::clone(&table_meta))?)
                 } else {
-                    Box::new(SequentialTable::new(&path, file_name, &table_meta)?)
+                    Box::new(SequentialTable::new(&path, file_name, Rc::clone(&table_meta))?)
                 };
                 tables.push(table);
             }
             self.tables.insert(table_name.to_string(), (table_meta, tables));
         }
 
-        let result: &(TableStructureMetadata, Vec<Box<dyn Table>>) = self.tables.get(table_name).unwrap();
+        let result: &(Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) = self.tables.get(table_name).unwrap();
         Ok(&result.1)
     }
 
@@ -66,13 +65,13 @@ impl TableManager {
     }
 
     pub fn get_field_metadata(&mut self, table_name: &str, field_name: &str) -> Result<&FieldMetadata, String> {
-        let map = self.load_metadata(table_name)?;
-        todo!()
+        let map = self.get_table_metadata(table_name)?;
+        map.get_field_metadata(field_name)
     }
 
     pub fn get_table_metadata(&mut self, table_name: &str) -> Result<&TableStructureMetadata, String> {
-        let map = self.load_metadata(table_name)?;
-        todo!()
+        let rc = &self.tables.get(table_name).unwrap().0;
+        Ok(&*rc)
     }
 
     fn load_metadata(&mut self, table_name: &str) -> Result<TableStructureMetadata, String> {
