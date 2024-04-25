@@ -24,7 +24,6 @@ pub trait Table {
     fn get_next_page_index(&self, page_index: usize) -> usize;
     fn get_row_value(&self, page_index: usize, cell_index: usize) -> *const u8;
     fn get_row_value_mut(&mut self, page_index: usize, cell_index: usize) -> *mut u8;
-    fn get_storage_file_name(&self) -> &str;
     fn flush_to_disk(&mut self);
     fn print_tree(&self, page_index: usize, cell_index: usize);
 }
@@ -37,7 +36,6 @@ pub struct BtreeTable {
     pub key_size: usize,
     pub key_offset_in_row: usize,
     pub row_size: usize,
-    pub storage_file_name: String,
 }
 
 impl Table for BtreeTable {
@@ -94,10 +92,6 @@ impl Table for BtreeTable {
         self.pager.get_leaf_node_value(page, cell_index)
     }
 
-    fn get_storage_file_name(&self) -> &str {
-        &self.storage_file_name
-    }
-
     fn flush_to_disk(&mut self) {
         for x in 0..TABLE_MAX_PAGES {
             if !self.pager.flush_page_to_disk(x) {
@@ -112,7 +106,7 @@ impl Table for BtreeTable {
 }
 
 impl BtreeTable {
-    pub(crate) fn new(path: &PathBuf, storage_file_name: String, table_metadata: Rc<TableStructureMetadata>) -> Result<BtreeTable, String> {
+    pub(crate) fn new(path: &PathBuf, table_metadata: Rc<TableStructureMetadata>) -> Result<BtreeTable, String> {
         match OpenOptions::new().create(true).read(true).write(true).open(path) {
             Ok(mut file) => {
                 let (is_primary, data_type, key_size, key_name) = Self::load_metadata(&mut file, &table_metadata.table_name)?;
@@ -131,7 +125,6 @@ impl BtreeTable {
                     key_size,
                     key_offset_in_row: table_metadata.get_field_metadata(&key_name)?.offset,
                     row_size: table_metadata.row_size,
-                    storage_file_name
                 })
             }
             Err(_) => {
@@ -610,12 +603,11 @@ pub struct SequentialTable {
     pub cells_num_by_page: usize,
     pub pager: SequentialPager,
     table_metadata: Rc<TableStructureMetadata>,
-    storage_file_name: String,
 }
 
 
 impl SequentialTable {
-    pub(crate) fn new(path: &PathBuf, storage_file_name: String, table_metadata: Rc<TableStructureMetadata>) -> Result<SequentialTable, String> {
+    pub(crate) fn new(path: &PathBuf, table_metadata: Rc<TableStructureMetadata>) -> Result<SequentialTable, String> {
         match OpenOptions::new().create(true).read(true).write(true).open(path) {
             Ok(file) => {
                 let pager = SequentialPager::open(file);
@@ -623,8 +615,7 @@ impl SequentialTable {
                     root_page_index: 0,
                     cells_num_by_page: (PAGE_SIZE - SEQUENTIAL_NODE_HEADER_SIZE) / table_metadata.row_size,
                     pager,
-                    table_metadata,
-                    storage_file_name
+                    table_metadata
                 })
             }
             Err(_) => {
@@ -808,10 +799,6 @@ impl Table for SequentialTable {
     fn get_row_value_mut(&mut self, page_index: usize, cell_index: usize) -> *mut u8 {
         let page = self.pager.get_or_create_page(page_index);
         self.pager.get_row_value_mut(page, cell_index, self.table_metadata.row_size)
-    }
-
-    fn get_storage_file_name(&self) -> &str {
-        todo!()
     }
 
     fn flush_to_disk(&mut self) {

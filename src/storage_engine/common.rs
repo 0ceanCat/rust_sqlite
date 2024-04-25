@@ -33,31 +33,51 @@ impl TableManager {
         }
     }
 
-    pub fn register_new_table(&mut self, storage_file: &str) {
-
+    pub fn register_new_table(&mut self, table_name: &str, storage_file: &PathBuf) -> Result<(), String>{
+        if !self.tables.contains_key(table_name) {
+            self.load_tables(table_name)
+        } else {
+            let (meta, tables) = self.tables.get_mut(table_name).unwrap();
+            let table = Self::load_table(storage_file, Rc::clone(&meta))?;
+            Ok(tables.push(table))
+        }
     }
 
-    pub fn get_or_load_tables(&mut self, table_name: &str) -> Result<&Vec<Box<dyn Table>>, String> {
+    pub fn get_tables(&mut self, table_name: &str) -> Result<&Vec<Box<dyn Table>>, String> {
         if !self.tables.contains_key(table_name) {
-            let table_meta = Rc::new(self.load_metadata(table_name)?);
-            let storage_files = list_files_of_folder(&build_path!(DATA_FOLDER, table_name))?;
-            let mut tables = Vec::<Box<dyn Table>>::new();
-
-            for (file_name, path) in storage_files {
-                let file_name = file_name.into_string().unwrap();
-                let index = file_name.ends_with(".idx");
-                let table: Box<dyn Table> = if index {
-                    Box::new(BtreeTable::new(&path, file_name, Rc::clone(&table_meta))?)
-                } else {
-                    Box::new(SequentialTable::new(&path, file_name, Rc::clone(&table_meta))?)
-                };
-                tables.push(table);
-            }
-            self.tables.insert(table_name.to_string(), (table_meta, tables));
+            self.load_tables(table_name);
         }
 
         let result: &(Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) = self.tables.get(table_name).unwrap();
         Ok(&result.1)
+    }
+
+    fn load_tables(&mut self, table_name: &str) -> Result<(), String>{
+        let table_meta = Rc::new(self.load_metadata(table_name)?);
+        let storage_files = list_files_of_folder(&build_path!(DATA_FOLDER, table_name))?;
+        let mut tables = Vec::<Box<dyn Table>>::new();
+
+        for (file_name, path) in storage_files {
+            let file_name = file_name.into_string().unwrap();
+            let index = file_name.ends_with(".idx");
+            let table: Box<dyn Table> = if index {
+                Box::new(BtreeTable::new(&path, Rc::clone(&table_meta))?)
+            } else {
+                Box::new(SequentialTable::new(&path, Rc::clone(&table_meta))?)
+            };
+            tables.push(table);
+        }
+        self.tables.insert(table_name.to_string(), (table_meta, tables));
+        Ok(())
+    }
+
+    fn load_table(storage_file_name: &PathBuf, table_meta: Rc<TableStructureMetadata>) -> Result<Box<dyn Table>, String> {
+        let is_index = storage_file_name.ends_with(".idx");
+        if is_index {
+            Ok(Box::new(BtreeTable::new(storage_file_name, Rc::clone(&table_meta))?))
+        } else {
+            Ok(Box::new(SequentialTable::new(storage_file_name, Rc::clone(&table_meta))?))
+        }
     }
 
     pub fn is_field_of_table(&mut self, table_name: &str, field_name: &str) -> bool {
