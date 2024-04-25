@@ -1,7 +1,9 @@
 use std::fs::{File, OpenOptions};
 use std::io::Read;
+use std::path::PathBuf;
 use std::ptr;
 use std::ptr::null_mut;
+use std::rc::Rc;
 use crate::sql_engine::sql_structs::{ConditionCluster, ConditionExpr, DataType, LogicalOperator, Value};
 use crate::storage_engine::config::{BTREE_METADATA_SIZE, INDEXED_FIELD_NAME_SIZE, INDEXED_FIELD_NAME_SIZE_OFFSET, INDEXED_FIELD_SIZE, INDEXED_FIELD_SIZE_OFFSET, INDEXED_FIELD_TYPE_PRIMARY, INTERNAL_NODE_CELL_SIZE, INTERNAL_NODE_MAX_KEYS, INVALID_PAGE_NUM, PAGE_SIZE, SEQUENTIAL_NODE_BODY_OFFSET, SEQUENTIAL_NODE_HEADER_SIZE, TABLE_MAX_PAGES};
 use crate::storage_engine::common::{RowBytes, TableStructureMetadata};
@@ -104,7 +106,7 @@ impl Table for BtreeTable {
 }
 
 impl BtreeTable {
-    pub(crate) fn new(path: &str, table_metadata: &TableStructureMetadata) -> Result<BtreeTable, String> {
+    pub(crate) fn new(path: &PathBuf, table_metadata: Rc<TableStructureMetadata>) -> Result<BtreeTable, String> {
         match OpenOptions::new().create(true).read(true).write(true).open(path) {
             Ok(mut file) => {
                 let (is_primary, data_type, key_size, key_name) = Self::load_metadata(&mut file, &table_metadata.table_name)?;
@@ -600,12 +602,12 @@ pub struct SequentialTable {
     pub root_page_index: usize,
     pub cells_num_by_page: usize,
     pub pager: SequentialPager,
-    table_metadata: &'static TableStructureMetadata,
+    table_metadata: Rc<TableStructureMetadata>,
 }
 
 
 impl SequentialTable {
-    pub(crate) fn new(path: &str, table_metadata: &'static TableStructureMetadata) -> Result<SequentialTable, String> {
+    pub(crate) fn new(path: &PathBuf, table_metadata: Rc<TableStructureMetadata>) -> Result<SequentialTable, String> {
         match OpenOptions::new().create(true).read(true).write(true).open(path) {
             Ok(file) => {
                 let pager = SequentialPager::open(file);
@@ -613,7 +615,7 @@ impl SequentialTable {
                     root_page_index: 0,
                     cells_num_by_page: (PAGE_SIZE - SEQUENTIAL_NODE_HEADER_SIZE) / table_metadata.row_size,
                     pager,
-                    table_metadata,
+                    table_metadata
                 })
             }
             Err(_) => {
