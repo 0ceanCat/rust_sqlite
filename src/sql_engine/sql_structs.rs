@@ -5,8 +5,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use crate::build_path;
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
-use crate::storage_engine::config::{BOOLEAN_SIZE, DATA_FOLDER, FIELD_NAME_SIZE, FIELD_NUMBER_SIZE, FIELD_TYPE_PRIMARY_SIZE, FLOAT_SIZE, INTEGER_SIZE, TEXT_DEFAULT_SIZE, TEXT_CHARS_NUM_SIZE};
-use crate::storage_engine::common::{RowBytes};
+use crate::storage_engine::config::*;
+use crate::storage_engine::common::{RowBytes, TableManager};
 use crate::storage_engine::tables::{Table};
 use crate::utils::utils::{is_folder_empty, ToU8, u8_array_to_string};
 
@@ -191,7 +191,7 @@ impl CreateStmt {
         }
     }
 
-    pub fn execute(&self) -> Result<(), String> {
+    pub fn execute(&self, table_manager: &mut TableManager) -> Result<(), String> {
         let table_name = self.table.as_str();
         let frm_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".frm");
 
@@ -205,17 +205,37 @@ impl CreateStmt {
             };
         }
 
-        match File::create(frm_path) {
-            Ok(file) => {
-                unsafe {self.write_metadata(file)}
+        let row_size = self.definitions.iter().map(|d| d.data_type.get_size()).sum();
+
+        unsafe {
+            match File::create(frm_path) {
+                Ok(file) => {
+                    self.write_structure_metadata(file)?
+                }
+                Err(e) => {
+                    return Err(String::from("Can not create table."));
+                }
             }
-            Err(e) => {
-                return Err(String::from("Can not create table."));
+
+            let primary_key = self.definitions.iter().filter(|d| d.is_primary_key).next();
+            match primary_key {
+                None => {
+                    let sequential_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".seq");
+                    let sequential_file = File::create(&sequential_path).unwrap();
+                    self.write_seq_metadata(sequential_file, row_size)?;
+                    table_manager.register_new_table(&self.table, &sequential_path)
+                }
+                Some(f) => {
+                    let primary_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".idx");
+                    let primary_file = File::create(&primary_path).unwrap();
+                    self.write_index_metadata(primary_file, f, row_size)?;
+                    table_manager.register_new_table(&self.table, &primary_path)
+                }
             }
         }
     }
 
-    unsafe fn write_metadata(&self, mut file: File) -> Result<(), String> {
+    unsafe fn write_structure_metadata(&self, mut file: File) -> Result<(), String> {
         let mut total_size = 0;
         total_size += FIELD_NUMBER_SIZE;
         total_size += self.definitions.len() * FIELD_NAME_SIZE;
@@ -247,11 +267,43 @@ impl CreateStmt {
         });
 
         if file.write(vec.as_slice()).is_err() {
+            return Err(format!("Can not write structure metadata for table {}!", self.table));
+        };
+        Ok(())
+    }
+
+    unsafe fn write_index_metadata(&self, mut file: File, primary_field: &FieldDefinition, row_size: usize) -> Result<(), String> {
+        let mut vec = vec![0; BTREE_METADATA_SIZE];
+        let buf = vec.as_mut_ptr();
+        let mut buf_pointer = 0; // pointer that points to the position where we should start reading
+
+        let data_type_primary: u8 = (primary_field.data_type.to_bit_code() << 1) | primary_field.is_primary_key.to_u8();
+        ptr::copy_nonoverlapping(&data_type_primary as *const u8, buf.add(buf_pointer), INDEXED_FIELD_TYPE_PRIMARY);
+        buf_pointer += INDEXED_FIELD_TYPE_PRIMARY;
+
+        ptr::copy_nonoverlapping(&primary_field.data_type.get_size() as *const usize as *const u8, buf, INDEXED_FIELD_SIZE);
+        buf_pointer += INDEXED_FIELD_SIZE;
+
+        ptr::copy_nonoverlapping(primary_field.field_name.as_ptr(), buf, INDEXED_FIELD_NAME_SIZE);
+        buf_pointer += INDEXED_FIELD_NAME_SIZE;
+
+        if file.write(vec.as_slice()).is_err() {
             return Err(format!("Can not write metadata for table {}!", self.table));
         };
         Ok(())
     }
 
+    unsafe fn write_seq_metadata(&self, mut file: File, row_size: usize) -> Result<(), String> {
+        let mut vec = vec![0; SEQUENTIAL_NODE_HEADER_SIZE];
+        let buf = vec.as_mut_ptr();
+        let cells_num = (PAGE_SIZE - SEQUENTIAL_NODE_HEADER_SIZE) / row_size;
+        ptr::copy_nonoverlapping(&cells_num as *const usize as *mut u8, buf, LEAF_NODE_NUM_CELLS_SIZE);
+
+        if file.write(vec.as_slice()).is_err() {
+            return Err(format!("Can not write metadata for table {}!", self.table));
+        };
+        Ok(())
+    }
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]

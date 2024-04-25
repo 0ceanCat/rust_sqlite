@@ -11,7 +11,7 @@ use crate::utils::utils::list_files_of_folder;
 use std::path::{Path, PathBuf};
 fn main() -> Result<(), String> {
     let mut table_manager = TableManager::new();
-    let x = table_manager.get_table_metadata("user")?;
+    //let x = table_manager.get_table_metadata("user")?;
     loop {
         let input = new_input_buffer();
 
@@ -33,7 +33,7 @@ fn main() -> Result<(), String> {
                 println!("{:?}", insert.execute()?);
             }
             SqlStmt::CREATE(create) => {
-                println!("{:?}", create.execute()?);
+                println!("{:?}", create.execute(&mut table_manager)?);
             }
         }
     }

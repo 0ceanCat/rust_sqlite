@@ -4,26 +4,26 @@ use std::os::windows::fs::FileExt;
 use std::process::exit;
 use std::ptr;
 use crate::sql_engine::sql_structs::{DataType, Value};
-use crate::storage_engine::config::{BtreeLeafNodeBodyLayout, INTERNAL_NODE_BODY_OFFSET, INTERNAL_NODE_CELL_SIZE, INTERNAL_NODE_CHILD_SIZE, INTERNAL_NODE_NUM_KEYS_OFFSET, INTERNAL_NODE_NUM_KEYS_SIZE, INTERNAL_NODE_RIGHT_CHILD_OFFSET, INTERNAL_NODE_RIGHT_CHILD_SIZE, INVALID_PAGE_NUM, IS_ROOT_OFFSET, IS_ROOT_SIZE, LEAF_NODE_BODY_OFFSET, LEAF_NODE_NUM_CELLS_OFFSET, LEAF_NODE_NUM_CELLS_SIZE, NODE_TYPE_OFFSET, NODE_TYPE_SIZE, PAGE_SIZE, PARENT_POINTER_OFFSET, PARENT_POINTER_SIZE, SEQUENTIAL_CELLS_NUM_SIZE, SEQUENTIAL_NODE_BODY_OFFSET, TABLE_MAX_PAGES};
+use crate::storage_engine::config::*;
 use crate::storage_engine::common::Page;
 use crate::storage_engine::enums::NodeType;
-use crate::utils::utils::copy;
 
 pub trait Pager {
     fn get_page(&self, page_index: usize) -> *const u8;
     fn get_or_create_page(&mut self, page_index: usize) -> *mut u8;
 }
 
+#[derive(Debug)]
 pub struct AbstractPager {
-    pages: [Option<Page>; TABLE_MAX_PAGES],
+    pages: Box<[Option<Page>; TABLE_MAX_PAGES]>,
     total_pages: usize,
     fd: File
 }
 
 impl AbstractPager {
-    fn new(total_pages: usize, file: File) -> AbstractPager {
+    pub(crate) fn new(total_pages: usize, file: File) -> AbstractPager {
         AbstractPager {
-            pages: [None; TABLE_MAX_PAGES],
+            pages: Box::new([None; TABLE_MAX_PAGES]),
             total_pages,
             fd: file
         }
@@ -461,24 +461,28 @@ impl BtreePager {
         }
     }
 }
+pub struct TestAbsctractPager{
+    pub(crate) pages: Box<[Option<Page>; 100]>,
+    pub(crate)  fd: Box<File>
+}
+pub struct TestPager{
+    pub(crate) abstract_pager: TestAbsctractPager,
+}
 
 pub struct SequentialPager {
     abstract_pager: AbstractPager,
-    updated: [bool; TABLE_MAX_PAGES],
     size: usize
 }
 
 impl SequentialPager {
     pub(crate) fn open(file: File) -> SequentialPager {
         let size = file.metadata().unwrap().len() as usize;
-        if size % PAGE_SIZE != 0 {
-            println!("Db file is not a whole number of pages. Corrupt file.");
-            exit(1);
+        if (size - SEQUENTIAL_NODE_HEADER_SIZE) % PAGE_SIZE != 0 {
+            panic!("Db file is not a whole number of pages. Corrupt file.");
         }
         let total_pages = size / PAGE_SIZE;
         SequentialPager {
             abstract_pager: AbstractPager::new(total_pages, file),
-            updated: [false; TABLE_MAX_PAGES],
             size
         }
     }

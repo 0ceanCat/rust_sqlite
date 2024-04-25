@@ -3,12 +3,14 @@ extern crate core;
 use std::io::{Read, Write};
 use std::{fs, ptr};
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use crate::build_path;
 use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Value};
 use crate::utils::utils::{copy, copy_nonoverlapping, list_files_of_folder, u8_array_to_string};
 use crate::storage_engine::config::*;
+use crate::storage_engine::pagers::{AbstractPager, SequentialPager, TestAbsctractPager, TestPager};
 use crate::storage_engine::tables::{BtreeTable, SequentialTable, Table};
 
 pub struct TableManager {
@@ -48,14 +50,15 @@ impl TableManager {
 
         for (file_name, path) in storage_files {
             let file_name = file_name.into_string().unwrap();
+            if file_name.ends_with(".frm") { continue }
             let index = file_name.ends_with(".idx");
             let table: Box<dyn Table> = if index {
                 Box::new(BtreeTable::new(&path, Rc::clone(&table_meta))?)
             } else {
-                Box::new(SequentialTable::new(&path, Rc::clone(&table_meta))?)
+                Box::new(SequentialTable::new(&path, Rc::clone(&table_meta)).unwrap())
             };
             tables.push(table);
-        }
+       }
         self.tables.insert(table_name.to_string(), (table_meta, tables));
         Ok(())
     }
@@ -84,7 +87,7 @@ impl TableManager {
     }
 
     fn load_metadata(&mut self, table_name: &str) -> Result<TableStructureMetadata, String> {
-        let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
+        let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".frm");
         let metadata = unsafe { Self::load_metadata_from_disk(&path)? };
         let tm = TableStructureMetadata::new(table_name, metadata);
         Ok(tm)
