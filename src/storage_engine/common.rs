@@ -1,37 +1,72 @@
 extern crate core;
 
-use std::fs::{File};
 use std::io::{Read, Write};
-use std::{ptr};
+use std::{fs, ptr};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use crate::build_path;
 use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Value};
-use crate::utils::utils::{copy, copy_nonoverlapping, u8_array_to_string};
+use crate::utils::utils::{copy, copy_nonoverlapping, list_files_of_folder, u8_array_to_string};
 use crate::storage_engine::config::*;
-use crate::storage_engine::tables::{BtreeTable, Table};
+use crate::storage_engine::tables::{BtreeTable, SequentialTable, Table};
 
 pub struct TableManager {
-    tables: HashMap<String, Box<dyn Table>>,
-    metadata: HashMap<String, TableStructureMetadata>,
+    tables: HashMap<String, (Rc<TableStructureMetadata> , Vec<(Box<dyn Table>)>)>,
 }
 
 impl TableManager {
     pub fn new() -> TableManager {
         TableManager {
             tables: HashMap::new(),
-            metadata: HashMap::new(),
         }
     }
 
-    pub fn get_or_load_table(&mut self, table_name: &str, path: &Path) -> Result<&mut Box<dyn Table>, String> {
-        let path_str = String::from(path.to_str().unwrap());
-        if !self.tables.contains_key(&path_str) {
-            let table = BtreeTable::new(path_str.as_str(), self.get_table_metadata(table_name)?)?;
-            self.tables.insert(path_str.clone(), Box::new(table));
+    pub fn register_new_table(&mut self, table_name: &str, storage_file: &PathBuf) -> Result<(), String>{
+        if !self.tables.contains_key(table_name) {
+            self.load_tables(table_name)
+        } else {
+            let (meta, tables) = self.tables.get_mut(table_name).unwrap();
+            let table = Self::load_table(storage_file, Rc::clone(&meta))?;
+            Ok(tables.push(table))
+        }
+    }
+
+    pub fn get_tables(&mut self, table_name: &str) -> Result<&Vec<Box<dyn Table>>, String> {
+        if !self.tables.contains_key(table_name) {
+            self.load_tables(table_name);
         }
 
-        Ok(self.tables.get_mut(&path_str).unwrap())
+        let result: &(Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) = self.tables.get(table_name).unwrap();
+        Ok(&result.1)
+    }
+
+    fn load_tables(&mut self, table_name: &str) -> Result<(), String>{
+        let table_meta = Rc::new(self.load_metadata(table_name)?);
+        let storage_files = list_files_of_folder(&build_path!(DATA_FOLDER, table_name))?;
+        let mut tables = Vec::<Box<dyn Table>>::new();
+
+        for (file_name, path) in storage_files {
+            let file_name = file_name.into_string().unwrap();
+            let index = file_name.ends_with(".idx");
+            let table: Box<dyn Table> = if index {
+                Box::new(BtreeTable::new(&path, Rc::clone(&table_meta))?)
+            } else {
+                Box::new(SequentialTable::new(&path, Rc::clone(&table_meta))?)
+            };
+            tables.push(table);
+        }
+        self.tables.insert(table_name.to_string(), (table_meta, tables));
+        Ok(())
+    }
+
+    fn load_table(storage_file_name: &PathBuf, table_meta: Rc<TableStructureMetadata>) -> Result<Box<dyn Table>, String> {
+        let is_index = storage_file_name.ends_with(".idx");
+        if is_index {
+            Ok(Box::new(BtreeTable::new(storage_file_name, Rc::clone(&table_meta))?))
+        } else {
+            Ok(Box::new(SequentialTable::new(storage_file_name, Rc::clone(&table_meta))?))
+        }
     }
 
     pub fn is_field_of_table(&mut self, table_name: &str, field_name: &str) -> bool {
@@ -39,29 +74,25 @@ impl TableManager {
     }
 
     pub fn get_field_metadata(&mut self, table_name: &str, field_name: &str) -> Result<&FieldMetadata, String> {
-        let map = self.get_or_load_metadata(table_name)?;
-
+        let map = self.get_table_metadata(table_name)?;
         map.get_field_metadata(field_name)
     }
 
     pub fn get_table_metadata(&mut self, table_name: &str) -> Result<&TableStructureMetadata, String> {
-        let map = self.get_or_load_metadata(table_name)?;
-        Ok(map)
+        let rc = &self.tables.get(table_name).unwrap().0;
+        Ok(&*rc)
     }
 
-    fn get_or_load_metadata(&mut self, table_name: &str) -> Result<&TableStructureMetadata, String> {
-        let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".frm");
-        if !self.metadata.contains_key(table_name) {
-            let metadata = unsafe { Self::load_metadata(table_name, &path)? };
-            self.metadata.insert(String::from(table_name), TableStructureMetadata::new(table_name, metadata));
-        }
-
-        Ok(self.metadata.get(table_name).unwrap())
+    fn load_metadata(&mut self, table_name: &str) -> Result<TableStructureMetadata, String> {
+        let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
+        let metadata = unsafe { Self::load_metadata_from_disk(&path)? };
+        let tm = TableStructureMetadata::new(table_name, metadata);
+        Ok(tm)
     }
 
     pub fn flash_to_disk(&mut self) {
         for table in self.tables.values_mut() {
-            table.flush_to_disk();
+            //table.flush_to_disk();
         }
     }
 
@@ -69,20 +100,13 @@ impl TableManager {
         match self.tables.get_mut(table_name) {
             None => {}
             Some(table) => {
-                table.print_tree(0, 0)
+               // table.print_tree(0, 0)
             }
         }
     }
 
-
-    unsafe fn load_metadata(table_name: &str, path: &Path) -> Result<HashMap<String, FieldMetadata>, String> {
-        let mut file = match File::open(path) {
-            Ok(file) => {file}
-            Err(_) => {return Err(format!("Table {} does not exist.", table_name))}
-        };
-        let mut metadata = Vec::<u8>::with_capacity(file.metadata().unwrap().len() as usize);
-        let _ = file.read_to_end(&mut metadata);
-
+    unsafe fn load_metadata_from_disk(path: &Path) -> Result<HashMap<String, FieldMetadata>, String> {
+        let metadata = fs::read(path).unwrap();
         let mut metadata_pointer = 0; // pointer that points to the position where we should start reading
 
         let ptr = metadata.as_ptr();

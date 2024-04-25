@@ -1,5 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fs, ptr};
+use std::ffi::OsString;
 
 #[macro_export]
 macro_rules! to_u8_array {
@@ -81,4 +82,22 @@ pub(crate) fn is_file_exists(folder_path: &Path) -> bool {
 pub(crate) fn u8_array_to_string(array: &[u8]) -> String {
     let end = array.iter().position(|c| *c == 0).unwrap_or(array.len());
     String::from_utf8_lossy(&array[..end]).to_string()
+}
+
+pub(crate) fn list_files_of_folder(folder_path: &PathBuf) -> Result<Vec<(OsString, PathBuf)>, String> {
+    match fs::read_dir(folder_path) {
+        Ok(entries) => {
+            let mut files: Vec<(OsString, PathBuf)> = vec![];
+            for entry in entries {
+                if let Ok(dirEntry) = entry {
+                   files.push((dirEntry.file_name(), dirEntry.path()));
+                }
+            }
+
+            Ok(files)
+        }
+        Err(_) => {
+            return Err(format!("Can not open directory {}", folder_path.to_str().unwrap()))
+        }
+    }
 }
