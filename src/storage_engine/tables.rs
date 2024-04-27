@@ -153,7 +153,7 @@ impl BtreeTable {
         let primary_mask: u8 = 0b0000_0001;
         let field_type_primary: u8 = 0;
 
-        copy(metadata.as_ptr(), field_type_primary as *mut u8, INDEXED_FIELD_TYPE_PRIMARY);
+        copy_nonoverlapping(metadata.as_ptr(), &field_type_primary as *const u8 as *mut u8, INDEXED_FIELD_TYPE_PRIMARY);
         let data_type_bit_code = (field_type_primary >> 1) | data_type_mask;
         let is_primary = (field_type_primary & primary_mask) == 1;
 
@@ -161,8 +161,8 @@ impl BtreeTable {
         let key_size: usize = 0;
         let mut key_name: [u8; INDEXED_FIELD_NAME_SIZE] = [0; INDEXED_FIELD_NAME_SIZE];
         unsafe {
-            copy(metadata.as_ptr().add(INDEXED_FIELD_SIZE_OFFSET), key_size as *const usize as *mut u8, INDEXED_FIELD_SIZE);
-            copy(metadata.as_ptr().add(INDEXED_FIELD_NAME_SIZE_OFFSET), key_name.as_mut_ptr(), INDEXED_FIELD_NAME_SIZE);
+            copy_nonoverlapping(metadata.as_ptr().add(INDEXED_FIELD_SIZE_OFFSET), &key_size as *const usize as *mut u8, INDEXED_FIELD_SIZE);
+            copy_nonoverlapping(metadata.as_ptr().add(INDEXED_FIELD_NAME_SIZE_OFFSET), key_name.as_mut_ptr(), INDEXED_FIELD_NAME_SIZE);
         }
         let key_field_name = u8_array_to_string(&key_name);
         Ok(BtreeMeta{

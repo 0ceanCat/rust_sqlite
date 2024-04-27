@@ -7,11 +7,9 @@ use std::io::{Read, Write};
 use crate::sql_engine::sql_parser::SqlParser;
 use crate::sql_engine::sql_structs::SqlStmt;
 use crate::storage_engine::common::*;
-use crate::utils::utils::list_files_of_folder;
-use std::path::{Path, PathBuf};
+
 fn main() -> Result<(), String> {
     let mut table_manager = TableManager::new();
-    //let x = table_manager.get_table_metadata("user")?;
     loop {
         let input = new_input_buffer();
 
@@ -21,7 +19,14 @@ fn main() -> Result<(), String> {
             table_manager.print_btree(input.split_once(" ").unwrap().1)
         }
 
-        let sql = SqlParser::parse_sql(input)?;
+        let sql = match SqlParser::parse_sql(input) {
+            Ok(sql) => {sql}
+            Err(e) => {
+                println!("{}", e);
+                continue;
+            }
+        };
+
         match sql {
             SqlStmt::SELECT(select) => {
                 let result = select.execute()?;
@@ -33,7 +38,12 @@ fn main() -> Result<(), String> {
                 println!("{:?}", insert.execute()?);
             }
             SqlStmt::CREATE(create) => {
-                println!("{:?}", create.execute(&mut table_manager)?);
+                println!("{:?}", match create.execute(&mut table_manager) {
+                    Ok(_) => {
+                        String::from("Table created.")
+                    }
+                    Err(e) => {e}
+                });
             }
         }
     }

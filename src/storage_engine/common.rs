@@ -3,14 +3,12 @@ extern crate core;
 use std::io::{Read, Write};
 use std::{fs, ptr};
 use std::collections::HashMap;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use crate::build_path;
 use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Value};
 use crate::utils::utils::{copy, copy_nonoverlapping, list_files_of_folder, u8_array_to_string};
 use crate::storage_engine::config::*;
-use crate::storage_engine::pagers::{AbstractPager, SequentialPager, TestAbsctractPager, TestPager};
 use crate::storage_engine::tables::{BtreeTable, SequentialTable, Table};
 
 pub struct TableManager {

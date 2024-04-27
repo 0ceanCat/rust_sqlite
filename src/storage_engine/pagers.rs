@@ -95,7 +95,7 @@ pub struct BtreePager {
 impl BtreePager {
     pub(crate) fn open(key_size: usize, row_size: usize, file: File) -> BtreePager {
         let size = file.metadata().unwrap().len() as usize;
-        if size % PAGE_SIZE != 0 {
+        if (size - BTREE_METADATA_SIZE) % PAGE_SIZE != 0 {
             println!("Db file is not a whole number of pages. Corrupt file.");
             exit(1);
         }
@@ -460,13 +460,6 @@ impl BtreePager {
             parent_index
         }
     }
-}
-pub struct TestAbsctractPager{
-    pub(crate) pages: Box<[Option<Page>; 100]>,
-    pub(crate)  fd: Box<File>
-}
-pub struct TestPager{
-    pub(crate) abstract_pager: TestAbsctractPager,
 }
 
 pub struct SequentialPager {

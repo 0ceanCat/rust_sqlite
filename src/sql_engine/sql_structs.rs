@@ -201,7 +201,7 @@ impl CreateStmt {
             let dir = build_path!(DATA_FOLDER, table_name);
             match fs::create_dir_all(dir) {
                 Ok(_) => {}
-                Err(_) => {return Err(String::from("Can not create dir."));}
+                Err(_) => { return Err(String::from("Can not create dir.")); }
             };
         }
 
@@ -273,7 +273,7 @@ impl CreateStmt {
     }
 
     unsafe fn write_index_metadata(&self, mut file: File, primary_field: &FieldDefinition, row_size: usize) -> Result<(), String> {
-        let mut vec = vec![0; BTREE_METADATA_SIZE];
+        let mut vec: [u8; BTREE_METADATA_SIZE] = [0; BTREE_METADATA_SIZE];
         let buf = vec.as_mut_ptr();
         let mut buf_pointer = 0; // pointer that points to the position where we should start reading
 
@@ -281,13 +281,12 @@ impl CreateStmt {
         ptr::copy_nonoverlapping(&data_type_primary as *const u8, buf.add(buf_pointer), INDEXED_FIELD_TYPE_PRIMARY);
         buf_pointer += INDEXED_FIELD_TYPE_PRIMARY;
 
-        ptr::copy_nonoverlapping(&primary_field.data_type.get_size() as *const usize as *const u8, buf, INDEXED_FIELD_SIZE);
+        ptr::copy_nonoverlapping(&primary_field.data_type.get_size() as *const usize as *const u8, buf.add(buf_pointer), INDEXED_FIELD_SIZE);
         buf_pointer += INDEXED_FIELD_SIZE;
 
-        ptr::copy_nonoverlapping(primary_field.field_name.as_ptr(), buf, INDEXED_FIELD_NAME_SIZE);
-        buf_pointer += INDEXED_FIELD_NAME_SIZE;
+        ptr::copy_nonoverlapping(primary_field.field_name.as_ptr(), buf.add(buf_pointer), primary_field.field_name.len());
 
-        if file.write(vec.as_slice()).is_err() {
+        if file.write(&vec).is_err() {
             return Err(format!("Can not write metadata for table {}!", self.table));
         };
         Ok(())
@@ -696,8 +695,8 @@ pub enum DataType {
 impl DataType {
     pub fn is_text(&self) -> bool {
         match self {
-            DataType::TEXT(_) => {true}
-            _ => {false}
+            DataType::TEXT(_) => { true }
+            _ => { false }
         }
     }
     pub fn to_bit_code(&self) -> u8 {
