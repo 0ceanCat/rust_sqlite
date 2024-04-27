@@ -317,9 +317,9 @@ impl<'a> InsertStmtParser<'a> {
             self.sql_parser.advance(); // skip '('
             let mut values = Vec::<Value>::new();
             while !self.sql_parser.is_end() {
+                self.sql_parser.skip_white_spaces();
                 let value = ValueParser { sql_parser: self.sql_parser }.parse()?;
                 values.push(value);
-
                 self.sql_parser.skip_white_spaces();
                 if !self.sql_parser.is_end() && self.sql_parser.current_char() == ',' {
                     self.sql_parser.advance();
@@ -466,7 +466,6 @@ impl<'a> ValueParser<'a> {
         while !self.sql_parser.is_end() && self.sql_parser.current_char() != ']' {
             self.sql_parser.skip_white_spaces();
             let value = self.parse()?;
-
             match value {
                 Value::ARRAY(_) => return Err(String::from("An array must contain only primitive values. But array detected.")),
                 Value::SelectStmt(_) => return Err(String::from("An array must contain only primitive values. But select statement detected.")),

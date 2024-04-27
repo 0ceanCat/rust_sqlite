@@ -32,13 +32,13 @@ impl TableManager {
         }
     }
 
-    pub fn get_tables(&mut self, table_name: &str) -> Result<&Vec<Box<dyn Table>>, String> {
+    pub fn get_tables(&mut self, table_name: &str) -> Result<&mut Vec<Box<dyn Table>>, String> {
         if !self.tables.contains_key(table_name) {
             self.load_tables(table_name);
         }
 
-        let result: &(Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) = self.tables.get(table_name).unwrap();
-        Ok(&result.1)
+        let result: &mut (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) = self.tables.get_mut(table_name).unwrap();
+        Ok(&mut result.1)
     }
 
     fn load_tables(&mut self, table_name: &str) -> Result<(), String>{
@@ -80,8 +80,17 @@ impl TableManager {
     }
 
     pub fn get_table_metadata(&mut self, table_name: &str) -> Result<&TableStructureMetadata, String> {
-        let rc = &self.tables.get(table_name).unwrap().0;
-        Ok(&*rc)
+        if self.tables.is_empty() {
+            self.load_tables(table_name)?;
+        }
+        match self.tables.get(table_name) {
+            None => {
+                return Err(format!("Table {} is not exist.", table_name))
+            }
+            Some(rc) => {
+                Ok(&*(rc.0))
+            }
+        }
     }
 
     fn load_metadata(&mut self, table_name: &str) -> Result<TableStructureMetadata, String> {
@@ -243,11 +252,16 @@ impl<'a> SelectResult<'a> {
     }
 }
 
-pub struct RowToInsert {
-    pub(crate) fields: Vec<(String, Value)>,
+pub struct RowToInsert<'a> {
+    pub(crate) fields: Vec<(&'a String, &'a Value)>,
 }
 
-impl RowToInsert {
+impl<'a> RowToInsert<'a> {
+    pub fn new(fields: Vec<(&'a String, &'a Value)>) -> RowToInsert {
+        RowToInsert{
+            fields
+        }
+    }
     pub fn to_bytes(&self, table_meta: &TableStructureMetadata) -> RowBytes {
         let mut bytes = vec![0; table_meta.row_size];
         let buf = bytes.as_mut_ptr();

@@ -53,7 +53,7 @@ impl Table for BtreeTable {
     }
 
     fn insert(&mut self, row: &RowToInsert) -> Result<(), String> {
-        let key = row.fields.iter().filter(|(name, v)| *name == self.key_field_name).next();
+        let key = row.fields.iter().filter(|(name, v)| **name == self.key_field_name).next();
         if key.is_none() {
             return Err(format!("Primary key {} must be set.", self.key_field_name))
         }

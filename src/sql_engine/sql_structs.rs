@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::build_path;
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 use crate::storage_engine::config::*;
-use crate::storage_engine::common::{RowBytes, TableManager};
+use crate::storage_engine::common::{RowBytes, RowToInsert, TableManager};
 use crate::storage_engine::tables::{Table};
 use crate::utils::utils::{is_folder_empty, ToU8, u8_array_to_string};
 
@@ -118,9 +118,17 @@ impl InsertStmt {
 
     pub fn execute(&self, table_manager: &mut TableManager) -> Result<(), String> {
         let meta = table_manager.get_table_metadata(&self.table)?;
-        let tables = table_manager.get_tables(&self.table)?;
-        for table in tables {
-            //table.insert()
+        match self.fields.iter().filter(|f| meta.get_field_metadata(f).is_err()).next() {
+            None => {}
+            Some(field) => {
+                return Err(format!("Field `{}` not found in table `{}`.", field, self.table));
+            }
+        };
+        let mut tables = table_manager.get_tables(&self.table)?;
+        let field_value_pairs: Vec<(&String, &Value)> = self.fields.iter().zip(self.values.iter()).collect();
+        let row = RowToInsert::new(field_value_pairs);
+        for mut table in tables.iter_mut() {
+            table.insert(&row)?;
         }
         Ok(())
     }
