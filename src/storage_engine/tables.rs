@@ -5,9 +5,9 @@ use std::ptr;
 use std::ptr::null_mut;
 use std::rc::Rc;
 use crate::sql_engine::sql_structs::{ConditionCluster, ConditionExpr, DataType, LogicalOperator, Value};
-use crate::storage_engine::config::{BTREE_METADATA_SIZE, INDEXED_FIELD_NAME_SIZE, INDEXED_FIELD_NAME_SIZE_OFFSET, INDEXED_FIELD_SIZE, INDEXED_FIELD_SIZE_OFFSET, INDEXED_FIELD_TYPE_PRIMARY, INTERNAL_NODE_CELL_SIZE, INTERNAL_NODE_MAX_KEYS, INVALID_PAGE_NUM, PAGE_SIZE, SEQUENTIAL_NODE_BODY_OFFSET, SEQUENTIAL_NODE_HEADER_SIZE, TABLE_MAX_PAGES};
+use crate::storage_engine::config::*;
 use crate::storage_engine::common::{RowBytes, TableStructureMetadata};
-use crate::storage_engine::cursor::{Cursor, ReadCursor, WriteReadCursor};
+use crate::storage_engine::cursor::{ReadCursor, WriteReadCursor};
 use crate::storage_engine::enums::NodeType;
 use crate::storage_engine::pagers::{BtreePager, Pager, SequentialPager};
 use crate::utils::utils::{copy, copy_nonoverlapping, indent, u8_array_to_string};
@@ -26,6 +26,13 @@ pub trait Table {
     fn get_row_value_mut(&mut self, page_index: usize, cell_index: usize) -> *mut u8;
     fn flush_to_disk(&mut self);
     fn print_tree(&self, page_index: usize, cell_index: usize);
+}
+
+pub struct BtreeMeta {
+    data_type: DataType,
+    is_primary: bool,
+    key_size: usize,
+    key_field_name: String
 }
 
 pub struct BtreeTable {
@@ -109,8 +116,8 @@ impl BtreeTable {
     pub(crate) fn new(path: &PathBuf, table_metadata: Rc<TableStructureMetadata>) -> Result<BtreeTable, String> {
         match OpenOptions::new().create(true).read(true).write(true).open(path) {
             Ok(mut file) => {
-                let (is_primary, data_type, key_size, key_name) = Self::load_metadata(&mut file, &table_metadata.table_name)?;
-                let pager = BtreePager::open(key_size, table_metadata.row_size, file);
+                let meta = Self::load_metadata(&mut file, &table_metadata.table_name)?;
+                let pager = BtreePager::open(meta.key_size, table_metadata.row_size, file);
                 let mut pager = pager;
                 if pager.get_pager_total_size() == 0 {
                     let first_page = pager.get_or_create_page(0);
@@ -120,10 +127,10 @@ impl BtreeTable {
                 Ok(BtreeTable {
                     root_page_index: 0,
                     pager,
-                    is_primary,
-                    key_type: data_type,
-                    key_size,
-                    key_offset_in_row: table_metadata.get_field_metadata(&key_name)?.offset,
+                    is_primary: meta.is_primary,
+                    key_type: meta.data_type,
+                    key_size: meta.key_size,
+                    key_offset_in_row: table_metadata.get_field_metadata(&meta.key_field_name)?.offset,
                     row_size: table_metadata.row_size,
                 })
             }
@@ -133,7 +140,7 @@ impl BtreeTable {
         }
     }
 
-    fn load_metadata(file: &mut File, table_name: &str) -> Result<(bool, DataType, usize, String), String> {
+    fn load_metadata(file: &mut File, table_name: &str) -> Result<BtreeMeta, String> {
         let mut metadata: [u8; BTREE_METADATA_SIZE] = [0; BTREE_METADATA_SIZE];
         match file.read(&mut metadata) {
             Ok(_) => {}
@@ -146,7 +153,7 @@ impl BtreeTable {
         let primary_mask: u8 = 0b0000_0001;
         let field_type_primary: u8 = 0;
 
-        copy(metadata.as_ptr(), field_type_primary as *mut u8, INDEXED_FIELD_TYPE_PRIMARY);
+        copy_nonoverlapping(metadata.as_ptr(), &field_type_primary as *const u8 as *mut u8, INDEXED_FIELD_TYPE_PRIMARY);
         let data_type_bit_code = (field_type_primary >> 1) | data_type_mask;
         let is_primary = (field_type_primary & primary_mask) == 1;
 
@@ -154,11 +161,16 @@ impl BtreeTable {
         let key_size: usize = 0;
         let mut key_name: [u8; INDEXED_FIELD_NAME_SIZE] = [0; INDEXED_FIELD_NAME_SIZE];
         unsafe {
-            copy(metadata.as_ptr().add(INDEXED_FIELD_SIZE_OFFSET), key_size as *const usize as *mut u8, INDEXED_FIELD_SIZE);
-            copy(metadata.as_ptr().add(INDEXED_FIELD_NAME_SIZE_OFFSET), key_name.as_mut_ptr(), INDEXED_FIELD_NAME_SIZE);
+            copy_nonoverlapping(metadata.as_ptr().add(INDEXED_FIELD_SIZE_OFFSET), &key_size as *const usize as *mut u8, INDEXED_FIELD_SIZE);
+            copy_nonoverlapping(metadata.as_ptr().add(INDEXED_FIELD_NAME_SIZE_OFFSET), key_name.as_mut_ptr(), INDEXED_FIELD_NAME_SIZE);
         }
-        let key_name = u8_array_to_string(&key_name);
-        Ok((is_primary, data_type, key_size, key_name))
+        let key_field_name = u8_array_to_string(&key_name);
+        Ok(BtreeMeta{
+            data_type,
+            is_primary,
+            key_size,
+            key_field_name
+        })
     }
 
     fn split_and_insert(&mut self, page_index: usize, cell_index: usize, row: &RowBytes) {
@@ -601,20 +613,20 @@ impl BtreeTable {
 pub struct SequentialTable {
     pub root_page_index: usize,
     pub cells_num_by_page: usize,
-    pub pager: SequentialPager,
+    pub pager: Box<SequentialPager>,
     table_metadata: Rc<TableStructureMetadata>,
 }
 
 
 impl SequentialTable {
     pub(crate) fn new(path: &PathBuf, table_metadata: Rc<TableStructureMetadata>) -> Result<SequentialTable, String> {
-        match OpenOptions::new().create(true).read(true).write(true).open(path) {
+        match File::open(path) {
             Ok(file) => {
                 let pager = SequentialPager::open(file);
                 Ok(SequentialTable {
                     root_page_index: 0,
                     cells_num_by_page: (PAGE_SIZE - SEQUENTIAL_NODE_HEADER_SIZE) / table_metadata.row_size,
-                    pager,
+                    pager: Box::new(pager),
                     table_metadata
                 })
             }
@@ -647,7 +659,7 @@ impl SequentialTable {
 
         copy_nonoverlapping(row_ptr.add(field_meta.offset), buf.as_mut_ptr(), field_meta.size);
         buf.set_len(field_meta.size);
-        let value = Value::from_ptr(&field_meta.data_type, buf.as_ptr());
+        let value = Value::from_ptr(&field_meta.data_def.data_type, buf.as_ptr());
         buf.clear();
 
         condition_expr.operator.operate(&value, &condition_expr.value)

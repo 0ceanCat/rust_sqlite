@@ -1,6 +1,5 @@
 extern crate core;
 
-use std::fs::{File};
 use std::io::{Read, Write};
 use std::{fs, ptr};
 use std::collections::HashMap;
@@ -8,19 +7,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use crate::build_path;
 use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Value};
-use crate::utils::utils::{copy, list_files_of_folder, u8_array_to_string};
+use crate::utils::utils::{copy, copy_nonoverlapping, list_files_of_folder, u8_array_to_string};
 use crate::storage_engine::config::*;
 use crate::storage_engine::tables::{BtreeTable, SequentialTable, Table};
-
-trait ToU8 {
-    fn to_u8(&self) -> u8;
-}
-
-impl ToU8 for bool {
-    fn to_u8(&self) -> u8 {
-        if *self { 1 } else { 0 }
-    }
-}
 
 pub struct TableManager {
     tables: HashMap<String, (Rc<TableStructureMetadata> , Vec<(Box<dyn Table>)>)>,
@@ -59,14 +48,15 @@ impl TableManager {
 
         for (file_name, path) in storage_files {
             let file_name = file_name.into_string().unwrap();
+            if file_name.ends_with(".frm") { continue }
             let index = file_name.ends_with(".idx");
             let table: Box<dyn Table> = if index {
                 Box::new(BtreeTable::new(&path, Rc::clone(&table_meta))?)
             } else {
-                Box::new(SequentialTable::new(&path, Rc::clone(&table_meta))?)
+                Box::new(SequentialTable::new(&path, Rc::clone(&table_meta)).unwrap())
             };
             tables.push(table);
-        }
+       }
         self.tables.insert(table_name.to_string(), (table_meta, tables));
         Ok(())
     }
@@ -95,7 +85,7 @@ impl TableManager {
     }
 
     fn load_metadata(&mut self, table_name: &str) -> Result<TableStructureMetadata, String> {
-        let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
+        let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".frm");
         let metadata = unsafe { Self::load_metadata_from_disk(&path)? };
         let tm = TableStructureMetadata::new(table_name, metadata);
         Ok(tm)
@@ -116,73 +106,13 @@ impl TableManager {
         }
     }
 
-    pub fn create_table(&self, table_name: &str, field_definitions: &Vec<FieldDefinition>) -> Result<(), String> {
-        let frm_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + "_frm");
-
-        if Path::new(&frm_path).exists() {
-            return Err(format!("Table {} already exists.", table_name));
-        }
-
-        match File::create(frm_path) {
-            Ok(mut file) => {
-                Self::write_metadata(&mut file, table_name, field_definitions)
-            }
-            Err(_) => {
-                return Err(String::from("Can not open create table."));
-            }
-        }
-    }
-
-    fn write_metadata(fd: &mut File, table_name: &str, field_definitions: &Vec<FieldDefinition>) -> Result<(), String> {
-        let mut total_size = 0;
-        total_size += FIELD_NUMBER_SIZE;
-        total_size += field_definitions.len() * FIELD_NAME_SIZE;
-        total_size += field_definitions.len() * FIELD_TYPE_PRIMARY;
-
-        field_definitions.iter().for_each(|field_definition| {
-            total_size += field_definition.data_type.get_size();
-        });
-
-        let mut vec = Vec::<u8>::with_capacity(total_size);
-        let buf = vec.as_mut_ptr();
-        let mut buf_pointer = 0; // pointer that points to the position where we should start reading
-
-        copy(field_definitions.len() as *const u8, buf, FIELD_NUMBER_SIZE);
-        buf_pointer += FIELD_NUMBER_SIZE;
-
-        field_definitions.iter().for_each(|field_definition| unsafe {
-            copy(field_definition.field_name.as_ptr(), buf.add(buf_pointer), FIELD_NAME_SIZE);
-            buf_pointer += FIELD_NAME_SIZE;
-            let data_type_primary: u8 = (field_definition.data_type.to_bit_code() << 1) | field_definition.is_primary_key.to_u8();
-            copy(data_type_primary as *mut u8, buf.add(buf_pointer), FIELD_TYPE_PRIMARY);
-            buf_pointer += FIELD_TYPE_PRIMARY;
-            match field_definition.data_type {
-                DataType::TEXT(size) => {
-                    copy(size as *const usize as *mut u8, buf.add(buf_pointer), TEXT_SIZE);
-                    buf_pointer += TEXT_SIZE;
-                }
-                _ => {}
-            }
-        });
-
-        unsafe {
-            vec.set_len(total_size);
-        }
-
-        if fd.write(vec.as_slice()).is_err() {
-            return Err(format!("Can not write metadata for table {}!", table_name));
-        };
-        Ok(())
-    }
-
     unsafe fn load_metadata_from_disk(path: &Path) -> Result<HashMap<String, FieldMetadata>, String> {
         let metadata = fs::read(path).unwrap();
-
         let mut metadata_pointer = 0; // pointer that points to the position where we should start reading
 
         let ptr = metadata.as_ptr();
         let fields_number: usize = 0;
-        copy(ptr, fields_number as *const usize as *mut u8, FIELD_NUMBER_SIZE);
+        copy_nonoverlapping(ptr, &fields_number as *const usize as *mut u8, FIELD_NUMBER_SIZE);
         metadata_pointer += FIELD_NUMBER_SIZE;
         let mut map: HashMap<String, FieldMetadata> = HashMap::with_capacity(fields_number);
 
@@ -190,18 +120,22 @@ impl TableManager {
         let primary: u8 = 0b0000_0001;
         let mut value_offset = 0; // offset of the current field's value
 
+        let mut buf: [u8; FIELD_NAME_SIZE] = [0; FIELD_NAME_SIZE];
         for _ in 0..fields_number {
+            copy_nonoverlapping(ptr.add(metadata_pointer), buf.as_mut_ptr(), FIELD_NAME_SIZE);
+            metadata_pointer += FIELD_NAME_SIZE;
+
             let field_type_primary: u8 = 0;
-            copy(ptr.add(metadata_pointer), field_type_primary as *mut u8, FIELD_TYPE_PRIMARY);
-            metadata_pointer += FIELD_TYPE_PRIMARY;
+            copy_nonoverlapping(ptr.add(metadata_pointer), &field_type_primary as *const u8 as *mut u8, FIELD_TYPE_PRIMARY_SIZE);
+            metadata_pointer += FIELD_TYPE_PRIMARY_SIZE;
 
             let data_type_bit_code = (field_type_primary >> 1) | data_type_mask;
             let mut size: usize = 0;
 
             let data_type = match DataType::from_bit_code(data_type_bit_code)? {
                 DataType::TEXT(_) => {
-                    copy(ptr.add(metadata_pointer), size as *const usize as *mut u8, TEXT_SIZE);
-                    metadata_pointer += TEXT_SIZE;
+                    copy(ptr.add(metadata_pointer), &size as *const usize as *mut u8, TEXT_CHARS_NUM_SIZE);
+                    metadata_pointer += TEXT_CHARS_NUM_SIZE;
                     DataType::TEXT(size)
                 }
                 DataType::INTEGER => {
@@ -218,13 +152,7 @@ impl TableManager {
                 }
             };
 
-
             let is_primary = (field_type_primary & primary) == 1;
-
-            let mut buf: [u8; FIELD_NAME_SIZE] = [0; FIELD_NAME_SIZE];
-
-            copy(ptr.add(metadata_pointer), buf.as_mut_ptr(), FIELD_NAME_SIZE);
-            metadata_pointer += FIELD_NAME_SIZE;
 
             let definition = FieldDefinition::new(u8_array_to_string(&buf), data_type, is_primary);
 
@@ -345,7 +273,7 @@ pub fn new_input_buffer() -> &'static str {
         }
         print!(">")
     }
-    input.leak().trim()
+    input.to_lowercase().leak().trim()
 }
 
 pub struct TableStructureMetadata {
@@ -375,7 +303,7 @@ impl TableStructureMetadata {
 }
 
 pub struct FieldMetadata {
-    pub data_type: DataType,
+    pub data_def: FieldDefinition,
     pub offset: usize,
     pub size: usize,
 }
@@ -383,7 +311,7 @@ pub struct FieldMetadata {
 impl FieldMetadata {
     pub fn new(field_definition: FieldDefinition, offset: usize, size: usize) -> FieldMetadata {
         FieldMetadata {
-            data_type: field_definition.data_type,
+            data_def: field_definition,
             offset,
             size,
         }

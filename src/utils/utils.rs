@@ -27,6 +27,16 @@ macro_rules! build_path {
     };
 }
 
+pub trait ToU8 {
+    fn to_u8(&self) -> u8;
+}
+
+impl ToU8 for bool {
+    fn to_u8(&self) -> u8 {
+        if *self { 1 } else { 0 }
+    }
+}
+
 pub(crate) fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize) {
     unsafe {
         ptr::copy_nonoverlapping(src, dst, count);
@@ -59,6 +69,13 @@ pub(crate) fn is_folder_empty(folder_path: &Path) -> bool {
         Err(_) => {
             true
         }
+    }
+}
+
+pub(crate) fn is_file_exists(folder_path: &Path) -> bool {
+    match fs::metadata(folder_path) {
+        Ok(_) => true,
+        Err(_) => false,
     }
 }
 

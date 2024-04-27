@@ -1,5 +1,6 @@
 use crate::sql_engine::sql_structs::{SelectStmt, WhereExpr, InsertStmt, ConditionCluster, ConditionExpr, Operator, LogicalOperator, Value, OrderByCluster, OrderByExpr, Order, SqlStmt, CreateStmt, FieldDefinition, DataType};
 use crate::sql_engine::keywords::*;
+use crate::storage_engine::config::FIELD_NAME_SIZE;
 
 static BLANK_SYMBOLS: [char; 4] = [' ', '\t', '\n', '\r'];
 static TOKEN_SEPARATORS: [char; 7] = [' ', ',', '(', ')', '\t', '\n', '\r'];
@@ -363,6 +364,11 @@ impl<'a> CreateStmtParser<'a> {
             while !self.sql_parser.is_end() {
                 self.sql_parser.skip_white_spaces();
                 let field = self.sql_parser.read_token()?;
+
+                if field.len() > FIELD_NAME_SIZE {
+                    return Err(format!("Field name can not exceed {FIELD_NAME_SIZE}"))
+                }
+
                 check_valid_field_name(&field)?;
                 check_key_word(&field)?;
                 self.sql_parser.skip_white_spaces();
@@ -382,6 +388,8 @@ impl<'a> CreateStmtParser<'a> {
                     self.sql_parser.advance();
                 } else if !self.sql_parser.is_end() && self.sql_parser.current_char() == ')' {
                     break;
+                } else {
+                    return Err(String::from("Syntax error, `,` expected between defined fields."))
                 }
             }
 
@@ -394,7 +402,7 @@ impl<'a> CreateStmtParser<'a> {
             }
             Ok(field_definitions)
         } else {
-            Err(String::from("Syntax error, Create statement has no defined values"))
+            Err(String::from("Syntax error, Create statement has no defined values. `(` expected after the table name."))
         }
     }
 }

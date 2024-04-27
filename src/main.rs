@@ -7,10 +7,9 @@ use std::io::{Read, Write};
 use crate::sql_engine::sql_parser::SqlParser;
 use crate::sql_engine::sql_structs::SqlStmt;
 use crate::storage_engine::common::*;
-use crate::utils::utils::list_files_of_folder;
-use std::path::{Path, PathBuf};
+
 fn main() -> Result<(), String> {
-    /*let mut table_manager = TableManager::new();
+    let mut table_manager = TableManager::new();
     loop {
         let input = new_input_buffer();
 
@@ -20,24 +19,33 @@ fn main() -> Result<(), String> {
             table_manager.print_btree(input.split_once(" ").unwrap().1)
         }
 
-        let sql = SqlParser::parse_sql(input)?;
+        let sql = match SqlParser::parse_sql(input) {
+            Ok(sql) => {sql}
+            Err(e) => {
+                println!("{}", e);
+                continue;
+            }
+        };
+
         match sql {
             SqlStmt::SELECT(select) => {
                 let result = select.execute()?;
                 for row in result {
-                    println!("[id:{}, username:{}, email:{}]", row.id, String::from_utf8_lossy(row.username.as_slice()), String::from_utf8_lossy(row.email.as_slice()));
+                    //println!("[id:{}, username:{}, email:{}]", row.id, String::from_utf8_lossy(row.username.as_slice()), String::from_utf8_lossy(row.email.as_slice()));
                 }
             }
             SqlStmt::INSERT(insert) => {
                 println!("{:?}", insert.execute()?);
             }
             SqlStmt::CREATE(create) => {
-                println!("{:?}", create);
+                println!("{:?}", match create.execute(&mut table_manager) {
+                    Ok(_) => {
+                        String::from("Table created.")
+                    }
+                    Err(e) => {e}
+                });
             }
         }
-    }*/
-    let a = 0b0000_0110;
-    let b = (a >> 1) | 0;
-    println!("{}", b);
+    }
     Ok(())
 }

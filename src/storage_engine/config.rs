@@ -42,11 +42,11 @@ pub const TABLE_MAX_PAGES: usize = 100;
 /*
  * Btree Table Metadata
  */
-pub const INDEXED_FIELD_TYPE_PRIMARY: usize = FIELD_TYPE_PRIMARY;
+pub const INDEXED_FIELD_TYPE_PRIMARY: usize = FIELD_TYPE_PRIMARY_SIZE;
 pub const INDEXED_FIELD_SIZE: usize = 2;
-pub const INDEXED_FIELD_SIZE_OFFSET: usize = INDEXED_FIELD_TYPE_PRIMARY;
+pub const INDEXED_FIELD_SIZE_OFFSET: usize = FIELD_TYPE_PRIMARY_SIZE;
 pub const INDEXED_FIELD_NAME_SIZE: usize = FIELD_NAME_SIZE;
-pub const INDEXED_FIELD_NAME_SIZE_OFFSET: usize = INDEXED_FIELD_TYPE_PRIMARY + INDEXED_FIELD_SIZE;
+pub const INDEXED_FIELD_NAME_SIZE_OFFSET: usize = INDEXED_FIELD_SIZE_OFFSET + INDEXED_FIELD_SIZE;
 pub const BTREE_METADATA_SIZE: usize = INDEXED_FIELD_TYPE_PRIMARY + INDEXED_FIELD_SIZE + INDEXED_FIELD_NAME_SIZE;
 
 /*
@@ -103,7 +103,7 @@ the following 2 bits for data
 10 -> float
 11 -> boolean
  */
-pub const FIELD_TYPE_PRIMARY: usize = 1;
+pub const FIELD_TYPE_PRIMARY_SIZE: usize = 1;
 pub const FIELD_NAME_SIZE: usize = 64;
 
 
@@ -111,8 +111,8 @@ pub const FIELD_NAME_SIZE: usize = 64;
 pub const TEXT_DEFAULT_SIZE: usize = 255;
 
 // number of bytes used to store each data type size in metadata file
-pub const TEXT_SIZE: usize = 2;
 // if the type is TEXT, there is an additional byte that represents the max size of this text
+pub const TEXT_CHARS_NUM_SIZE: usize = 2;
 pub const INTEGER_SIZE: usize = 4;
 pub const FLOAT_SIZE: usize = 4;
 pub const BOOLEAN_SIZE: usize = 1;
