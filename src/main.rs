@@ -13,10 +13,12 @@ fn main() -> Result<(), String> {
     loop {
         let input = new_input_buffer();
 
-        if input == "flush" {
-            table_manager.flash_to_disk()
-        } else if input.starts_with("btree") {
-            table_manager.print_btree(input.split_once(" ").unwrap().1)
+        if input == "flush;" {
+            table_manager.flash_to_disk();
+            continue;
+        } else if input.starts_with("btree;") {
+            table_manager.print_btree(input.split_once(" ").unwrap().1);
+            continue;
         }
 
         let sql = match SqlParser::parse_sql(input) {
@@ -35,7 +37,7 @@ fn main() -> Result<(), String> {
                 }
             }
             SqlStmt::INSERT(insert) => {
-                println!("{:?}", insert.execute()?);
+                println!("{:?}", insert.execute(&mut table_manager)?);
             }
             SqlStmt::CREATE(create) => {
                 println!("{:?}", match create.execute(&mut table_manager) {

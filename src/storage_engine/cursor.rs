@@ -3,9 +3,9 @@ use crate::storage_engine::tables::{Table};
 use crate::storage_engine::common::{RowBytes};
 
 pub struct Cursor {
-    page_index: usize,
-    cell_index: usize,
-    end_of_table: bool,
+    pub page_index: usize,
+    pub cell_index: usize,
+    pub end_of_table: bool,
     pub row_size: usize,
 }
 
@@ -66,10 +66,6 @@ impl<'a> WriteReadCursor<'a> {
                 self.cell_index = 0;
             }
         }
-    }
-
-    pub(crate) fn insert_row(&mut self, row: &RowBytes) {
-        self.table.insert(self.page_index, self.cell_index, row)
     }
 
     pub(crate) fn is_end(&self) -> bool {

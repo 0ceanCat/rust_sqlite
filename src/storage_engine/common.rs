@@ -32,13 +32,13 @@ impl TableManager {
         }
     }
 
-    pub fn get_tables(&mut self, table_name: &str) -> Result<&Vec<Box<dyn Table>>, String> {
+    pub fn get_tables(&mut self, table_name: &str) -> Result<&mut Vec<Box<dyn Table>>, String> {
         if !self.tables.contains_key(table_name) {
             self.load_tables(table_name);
         }
 
-        let result: &(Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) = self.tables.get(table_name).unwrap();
-        Ok(&result.1)
+        let result: &mut (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) = self.tables.get_mut(table_name).unwrap();
+        Ok(&mut result.1)
     }
 
     fn load_tables(&mut self, table_name: &str) -> Result<(), String>{
@@ -80,8 +80,17 @@ impl TableManager {
     }
 
     pub fn get_table_metadata(&mut self, table_name: &str) -> Result<&TableStructureMetadata, String> {
-        let rc = &self.tables.get(table_name).unwrap().0;
-        Ok(&*rc)
+        if self.tables.is_empty() {
+            self.load_tables(table_name)?;
+        }
+        match self.tables.get(table_name) {
+            None => {
+                return Err(format!("Table {} is not exist.", table_name))
+            }
+            Some(rc) => {
+                Ok(&*(rc.0))
+            }
+        }
     }
 
     fn load_metadata(&mut self, table_name: &str) -> Result<TableStructureMetadata, String> {
@@ -243,8 +252,42 @@ impl<'a> SelectResult<'a> {
     }
 }
 
+pub struct RowToInsert<'a> {
+    pub(crate) fields: Vec<(&'a String, &'a Value)>,
+}
+
+impl<'a> RowToInsert<'a> {
+    pub fn new(fields: Vec<(&'a String, &'a Value)>) -> RowToInsert {
+        RowToInsert{
+            fields
+        }
+    }
+    pub fn to_bytes(&self, table_meta: &TableStructureMetadata) -> RowBytes {
+        let mut bytes = vec![0; table_meta.row_size];
+        let buf = bytes.as_mut_ptr();
+
+        unsafe {
+            for (name, value) in &self.fields {
+                let field_meta = table_meta.get_field_metadata(name).unwrap();
+                match value {
+                    Value::INTEGER(i) => { copy_nonoverlapping(i as *const i32 as *const u8, buf.add(field_meta.offset), field_meta.size); }
+                    Value::FLOAT(f) => { copy_nonoverlapping(f as *const f32 as *const u8, buf.add(field_meta.offset), field_meta.size); }
+                    Value::BOOLEAN(b) => { copy_nonoverlapping(b as *const bool as *const u8, buf.add(field_meta.offset), field_meta.size); }
+                    Value::STRING(s) => { copy_nonoverlapping(s.as_ptr(), buf.add(field_meta.offset), s.len()); }
+                    Value::ARRAY(_) => {}
+                    Value::SelectStmt(_) => {}
+                }
+            }
+        }
+        RowBytes {
+            data: bytes.as_slice().into()
+        }
+    }
+}
+
+
 pub struct HumanReadableRow {
-    fields: Vec<Value>,
+    pub(crate) fields: Vec<Value>,
 }
 
 impl HumanReadableRow {
