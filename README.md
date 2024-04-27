@@ -2,6 +2,6 @@
 
 A simple relational database implementation.
 
-Based on https://cstack.github.io/db_tutorial/parts/part1.html.
+Btree implementation is based on https://cstack.github.io/db_tutorial/parts/part1.html.
 
 Just for fun
