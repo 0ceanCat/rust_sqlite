@@ -243,8 +243,37 @@ impl<'a> SelectResult<'a> {
     }
 }
 
+pub struct RowToInsert {
+    pub(crate) fields: Vec<(String, Value)>,
+}
+
+impl RowToInsert {
+    pub fn to_bytes(&self, table_meta: &TableStructureMetadata) -> RowBytes {
+        let mut bytes = vec![0; table_meta.row_size];
+        let buf = bytes.as_mut_ptr();
+
+        unsafe {
+            for (name, value) in &self.fields {
+                let field_meta = table_meta.get_field_metadata(name).unwrap();
+                match value {
+                    Value::INTEGER(i) => { copy_nonoverlapping(i as *const i32 as *const u8, buf.add(field_meta.offset), field_meta.size); }
+                    Value::FLOAT(f) => { copy_nonoverlapping(f as *const f32 as *const u8, buf.add(field_meta.offset), field_meta.size); }
+                    Value::BOOLEAN(b) => { copy_nonoverlapping(b as *const bool as *const u8, buf.add(field_meta.offset), field_meta.size); }
+                    Value::STRING(s) => { copy_nonoverlapping(s.as_ptr(), buf.add(field_meta.offset), s.len()); }
+                    Value::ARRAY(_) => {}
+                    Value::SelectStmt(_) => {}
+                }
+            }
+        }
+        RowBytes {
+            data: bytes.as_slice().into()
+        }
+    }
+}
+
+
 pub struct HumanReadableRow {
-    fields: Vec<Value>,
+    pub(crate) fields: Vec<Value>,
 }
 
 impl HumanReadableRow {

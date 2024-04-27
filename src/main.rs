@@ -35,7 +35,7 @@ fn main() -> Result<(), String> {
                 }
             }
             SqlStmt::INSERT(insert) => {
-                println!("{:?}", insert.execute()?);
+                println!("{:?}", insert.execute(&mut table_manager)?);
             }
             SqlStmt::CREATE(create) => {
                 println!("{:?}", match create.execute(&mut table_manager) {

@@ -1,28 +1,5 @@
 use crate::storage_engine::enums::NodeType::{Internal, Leaf};
 
-pub(crate) enum MetaCommandResult {
-    MetaCommandSuccess,
-    MetaCommandUnrecognizedCommand,
-    MetaCommandExit,
-}
-
-pub(crate) enum PrepareResult {
-    PrepareSuccess,
-    PrepareUnrecognizedStatement,
-}
-
-pub(crate) enum ExecutionResult {
-    ExecutionSuccess,
-    ExecutionTableFull,
-}
-
-pub(crate) enum StatementType {
-    StatementInsert,
-    StatementSelect,
-    StatementFlush,
-    StatementBTree,
-}
-
 pub(crate) enum NodeType {
     Leaf = 0,
     Internal = 1,

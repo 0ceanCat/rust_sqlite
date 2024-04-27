@@ -116,17 +116,13 @@ impl InsertStmt {
         }
     }
 
-    pub fn execute(&self) -> Result<usize, String> {
-        let mut path = PathBuf::new();
-        path.push(DATA_FOLDER);
-        path.push(&self.table);
-        self.check_folder(&path)?;
-        self.check_data_file();
-        let files = fs::read_dir(&path).unwrap();
-        for entry in files {
-            let entry = entry.unwrap();
+    pub fn execute(&self, table_manager: &mut TableManager) -> Result<(), String> {
+        let meta = table_manager.get_table_metadata(&self.table)?;
+        let tables = table_manager.get_tables(&self.table)?;
+        for table in tables {
+            //table.insert()
         }
-        Ok(1)
+        Ok(())
     }
 
     fn check_folder(&self, path: &Path) -> Result<(), String> {
@@ -534,9 +530,7 @@ impl PartialEq for Value {
             Value::INTEGER(i) => { *i == other.unwrap_into_int().unwrap() }
             Value::FLOAT(f) => { *f == other.unwrap_into_float().unwrap() }
             Value::BOOLEAN(b) => { *b == other.unwrap_into_bool().unwrap() }
-            Value::STRING(s) => {
-                s == other.unwrap_as_string().unwrap()
-            }
+            Value::STRING(s) => {s == other.unwrap_as_string().unwrap()}
             Value::ARRAY(a) => { a == other.unwrap_as_array().unwrap() }
             Value::SelectStmt(s) => { other.is_select_stmt() }
         }

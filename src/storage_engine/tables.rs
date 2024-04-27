@@ -6,7 +6,7 @@ use std::ptr::null_mut;
 use std::rc::Rc;
 use crate::sql_engine::sql_structs::{ConditionCluster, ConditionExpr, DataType, LogicalOperator, Value};
 use crate::storage_engine::config::*;
-use crate::storage_engine::common::{RowBytes, TableStructureMetadata};
+use crate::storage_engine::common::{RowBytes, RowToInsert, TableStructureMetadata};
 use crate::storage_engine::cursor::{ReadCursor, WriteReadCursor};
 use crate::storage_engine::enums::NodeType;
 use crate::storage_engine::pagers::{BtreePager, Pager, SequentialPager};
@@ -14,7 +14,7 @@ use crate::utils::utils::{copy, copy_nonoverlapping, indent, u8_array_to_string}
 
 pub trait Table {
     fn begin(&mut self) -> WriteReadCursor;
-    fn insert(&mut self, page_index: usize, cell_index: usize, row: &RowBytes);
+    fn insert(&mut self, row: &RowToInsert) -> Result<(), String>;
     fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes>;
     fn find_by_condition_clusters(&mut self, condition_clusters: &Vec<(LogicalOperator, ConditionCluster)>) -> Vec<RowBytes>;
     fn end(&mut self) -> WriteReadCursor;
@@ -32,7 +32,7 @@ pub struct BtreeMeta {
     data_type: DataType,
     is_primary: bool,
     key_size: usize,
-    key_field_name: String
+    key_field_name: String,
 }
 
 pub struct BtreeTable {
@@ -42,7 +42,9 @@ pub struct BtreeTable {
     pub key_type: DataType,
     pub key_size: usize,
     pub key_offset_in_row: usize,
+    pub key_field_name: String,
     pub row_size: usize,
+    table_metadata: Rc<TableStructureMetadata>
 }
 
 impl Table for BtreeTable {
@@ -50,15 +52,27 @@ impl Table for BtreeTable {
         self.find_smallest_or_biggest_key(false)
     }
 
-    fn insert(&mut self, page_index: usize, cell_index: usize, row: &RowBytes) {
+    fn insert(&mut self, row: &RowToInsert) -> Result<(), String> {
+        let key = row.fields.iter().filter(|(name, v)| *name == self.key_field_name).next();
+        if key.is_none() {
+            return Err(format!("Primary key {} must be set.", self.key_field_name))
+        }
+        let (_, key) = key.unwrap();
+
+        let cursor = self.table_find_by_key(key);
+        let page_index = cursor.page_index;
+        let cell_index = cursor.cell_index;
+
         let page = self.pager.get_or_create_page(page_index);
         let num_cells = BtreePager::get_leaf_node_num_cells(page);
+        let row_bytes = row.to_bytes(&self.table_metadata);
 
         if num_cells >= self.pager.get_body_layout().LEAF_NODE_MAX_CELLS {
-            self.split_and_insert(page_index, cell_index, &row);
+            self.split_and_insert(page_index, cell_index, &row_bytes);
         } else {
-            self.move_and_insert(page_index, cell_index, &row);
+            self.move_and_insert(page_index, cell_index, &row_bytes);
         }
+        Ok(())
     }
 
     fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes> {
@@ -131,7 +145,9 @@ impl BtreeTable {
                     key_type: meta.data_type,
                     key_size: meta.key_size,
                     key_offset_in_row: table_metadata.get_field_metadata(&meta.key_field_name)?.offset,
+                    key_field_name: meta.key_field_name,
                     row_size: table_metadata.row_size,
+                    table_metadata
                 })
             }
             Err(_) => {
@@ -165,11 +181,11 @@ impl BtreeTable {
             copy_nonoverlapping(metadata.as_ptr().add(INDEXED_FIELD_NAME_SIZE_OFFSET), key_name.as_mut_ptr(), INDEXED_FIELD_NAME_SIZE);
         }
         let key_field_name = u8_array_to_string(&key_name);
-        Ok(BtreeMeta{
+        Ok(BtreeMeta {
             data_type,
             is_primary,
             key_size,
-            key_field_name
+            key_field_name,
         })
     }
 
@@ -627,7 +643,7 @@ impl SequentialTable {
                     root_page_index: 0,
                     cells_num_by_page: (PAGE_SIZE - SEQUENTIAL_NODE_HEADER_SIZE) / table_metadata.row_size,
                     pager: Box::new(pager),
-                    table_metadata
+                    table_metadata,
                 })
             }
             Err(_) => {
@@ -647,15 +663,16 @@ impl SequentialTable {
         result
     }
 
-    pub(crate) fn insert_to_end(&mut self, page_index: usize, cell_index: usize, row: &RowBytes) {
+    pub(crate) fn insert_to_end(&mut self, page_index: usize, cell_index: usize, row: &RowToInsert) {
         let ptr = self.get_row_value_mut(page_index, cell_index);
-        copy_nonoverlapping(row.data.as_ptr(), ptr, self.table_metadata.row_size);
+        let row_bytes = row.to_bytes(&self.table_metadata);
+        copy_nonoverlapping(row_bytes.data.as_ptr(), ptr, self.table_metadata.row_size);
         self.pager.increment_cells_num(page_index);
     }
 
-    pub unsafe fn read_compare_value(&self, row_ptr: *const u8, buf: &mut Vec<u8>, condition_expr: &ConditionExpr) -> bool{
+    pub unsafe fn read_compare_value(&self, row_ptr: *const u8, buf: &mut Vec<u8>, condition_expr: &ConditionExpr) -> bool {
         let field_meta = self.table_metadata.get_field_metadata(&condition_expr.field)
-                                                          .unwrap();
+            .unwrap();
 
         copy_nonoverlapping(row_ptr.add(field_meta.offset), buf.as_mut_ptr(), field_meta.size);
         buf.set_len(field_meta.size);
@@ -672,9 +689,9 @@ impl Table for SequentialTable {
         WriteReadCursor::at(self, page_index, 0)
     }
 
-    fn insert(&mut self, page_index: usize, cell_index: usize, row: &RowBytes) {
-        let mut write_to_cell_index = self.get_num_cells(page_index);
-        let mut write_to_page = page_index;
+    fn insert(&mut self, row: &RowToInsert) -> Result<(), String> {
+        let mut write_to_page = self.pager.get_total_page();
+        let mut write_to_cell_index = self.get_num_cells(write_to_page);
 
         if write_to_cell_index >= self.cells_num_by_page {
             write_to_page += 1;
@@ -682,6 +699,7 @@ impl Table for SequentialTable {
         }
 
         self.insert_to_end(write_to_page, write_to_cell_index, row);
+        Ok(())
     }
 
     fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes> {
@@ -697,7 +715,7 @@ impl Table for SequentialTable {
             while !cursor.is_end() {
                 let row_ptr = cursor.cursor_value();
 
-                if self.read_compare_value(row_ptr, &mut buf, condition_expr){
+                if self.read_compare_value(row_ptr, &mut buf, condition_expr) {
                     result.push(RowBytes::deserialize_row(row_ptr, row_size));
                 }
 
@@ -725,16 +743,16 @@ impl Table for SequentialTable {
                 .collect();
 
             let max_size_field = condition_cluster.conditions.iter()
-                                        .map(|c| self.table_metadata.get_field_metadata(&c.field).unwrap().size)
-                                        .max()
-                                        .unwrap();
+                .map(|c| self.table_metadata.get_field_metadata(&c.field).unwrap().size)
+                .max()
+                .unwrap();
             cluster_conditions.push((logical_op, and_conditions, or_conditions, max_size_field));
         });
 
         let global_max_field_size = cluster_conditions.iter()
-                                                        .map(|(_, _, _, cluster_max_field_size)| *cluster_max_field_size)
-                                                        .max()
-                                                        .unwrap();
+            .map(|(_, _, _, cluster_max_field_size)| *cluster_max_field_size)
+            .max()
+            .unwrap();
 
         let mut buf = Vec::<u8>::with_capacity(global_max_field_size);
 
@@ -743,7 +761,6 @@ impl Table for SequentialTable {
                 let row_ptr = cursor.cursor_value();
                 let mut all_clusters_matched = true;
                 for (logical_op, and_conditions, or_conditions, _) in &cluster_conditions {
-
                     let mut and_matched = true;
 
                     for condition_expr in and_conditions {
