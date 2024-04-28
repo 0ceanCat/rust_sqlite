@@ -124,9 +124,8 @@ impl InsertStmt {
                 return Err(format!("Field `{}` not found in table `{}`.", field, self.table));
             }
         };
+        let row = RowToInsert::new(&self.fields, &self.values, table_manager.get_table_metadata(&self.table)?);
         let mut tables = table_manager.get_tables(&self.table)?;
-        let field_value_pairs: Vec<(&String, &Value)> = self.fields.iter().zip(self.values.iter()).collect();
-        let row = RowToInsert::new(field_value_pairs);
         for mut table in tables.iter_mut() {
             table.insert(&row)?;
         }
@@ -538,7 +537,7 @@ impl PartialEq for Value {
             Value::INTEGER(i) => { *i == other.unwrap_into_int().unwrap() }
             Value::FLOAT(f) => { *f == other.unwrap_into_float().unwrap() }
             Value::BOOLEAN(b) => { *b == other.unwrap_into_bool().unwrap() }
-            Value::STRING(s) => {s == other.unwrap_as_string().unwrap()}
+            Value::STRING(s) => { s == other.unwrap_as_string().unwrap() }
             Value::ARRAY(a) => { a == other.unwrap_as_array().unwrap() }
             Value::SelectStmt(s) => { other.is_select_stmt() }
         }

@@ -53,24 +53,23 @@ impl Table for BtreeTable {
     }
 
     fn insert(&mut self, row: &RowToInsert) -> Result<(), String> {
-        let key = row.fields.iter().filter(|(name, v)| **name == self.key_field_name).next();
+        let key = row.field_value_pairs.iter().filter(|(name, _)| **name == self.key_field_name).next();
         if key.is_none() {
             return Err(format!("Primary key {} must be set.", self.key_field_name))
         }
-        let (_, key) = key.unwrap();
 
-        let cursor = self.table_find_by_key(key);
+        let (_, key_value) = key.unwrap();
+
+        let cursor = self.table_find_by_key(key_value);
         let page_index = cursor.page_index;
         let cell_index = cursor.cell_index;
 
         let page = self.pager.get_or_create_page(page_index);
         let num_cells = BtreePager::get_leaf_node_num_cells(page);
-        let row_bytes = row.to_bytes(&self.table_metadata);
-
         if num_cells >= self.pager.get_body_layout().LEAF_NODE_MAX_CELLS {
-            self.split_and_insert(page_index, cell_index, &row_bytes);
+            self.split_and_insert(page_index, cell_index, &row.raw_data);
         } else {
-            self.move_and_insert(page_index, cell_index, &row_bytes);
+            self.move_and_insert(page_index, cell_index, &row.raw_data);
         }
         Ok(())
     }
@@ -665,8 +664,7 @@ impl SequentialTable {
 
     pub(crate) fn insert_to_end(&mut self, page_index: usize, cell_index: usize, row: &RowToInsert) {
         let ptr = self.get_row_value_mut(page_index, cell_index);
-        let row_bytes = row.to_bytes(&self.table_metadata);
-        copy_nonoverlapping(row_bytes.data.as_ptr(), ptr, self.table_metadata.row_size);
+        copy_nonoverlapping(row.raw_data.as_ptr(), ptr, self.table_metadata.row_size);
         self.pager.increment_cells_num(page_index);
     }
 
