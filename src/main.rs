@@ -31,10 +31,8 @@ fn main() -> Result<(), String> {
 
         match sql {
             SqlStmt::SELECT(select) => {
-                let result = select.execute()?;
-                for row in result {
-                    //println!("[id:{}, username:{}, email:{}]", row.id, String::from_utf8_lossy(row.username.as_slice()), String::from_utf8_lossy(row.email.as_slice()));
-                }
+                let result = select.execute(&mut table_manager)?;
+                result.print();
             }
             SqlStmt::INSERT(insert) => {
                 println!("{:?}", match insert.execute(&mut table_manager) {

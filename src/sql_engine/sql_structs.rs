@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use crate::build_path;
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 use crate::storage_engine::config::*;
-use crate::storage_engine::common::{RowBytes, RowToInsert, TableManager};
+use crate::storage_engine::common::{FieldMetadata, RowValues, RowBytes, RowToInsert, SelectResult, TableManager};
 use crate::storage_engine::tables::{Table};
-use crate::utils::utils::{is_folder_empty, ToU8, u8_array_to_string};
+use crate::utils::utils::{copy_nonoverlapping, is_folder_empty, ToU8, u8_array_to_string};
 
 pub(crate) trait Printable {
     fn print_stmt(&self) {}
@@ -79,23 +79,58 @@ impl SelectStmt {
         }
     }
 
-    pub(crate) fn execute(&self) -> Result<Vec<RowBytes>, String> {
-        /*let file = self.table_file()?;
-        let pager = Pager::open_from(file);
-        let mut table = Table::new(pager);
-        let mut result = Vec::<Row>::new();
-        if self.where_expr.is_some() {
-            let where_expr = self.where_expr.as_ref().unwrap();
-            let set = where_expr.execute(&mut table)?;
-            result = set.into_iter().collect();
+    pub(crate) fn execute<'a>(&'a self, table_manager: &'a mut TableManager) -> Result<SelectResult, String> {
+        let table = table_manager.get_tables(&self.table)?.iter_mut().next();
+        if table.is_none() {
+            return Err(format!("Table {} does not exist.", self.table));
+        }
+
+        let table = table.unwrap();
+        let result = match &self.where_expr {
+            None => {
+                table.get_all()
+            }
+            Some(w) => {
+                w.execute(table)
+            }
+        };
+
+        let table_meta = table_manager.get_table_metadata(&self.table)?;
+
+        let fields_name: Vec<&str> = if self.selected_fields.len() == 1 && self.selected_fields.first().unwrap() == "*" {
+            table_meta.fields_metadata.values().map(|v| v.1.data_def.field_name.as_str()).collect()
         } else {
-            result = table.read_all();
-        }
-        if self.order_by_expr.is_some() {
-            todo!()
-        }
-        Ok(result)*/
-        todo!()
+            self.selected_fields.iter().map(|x| x.as_str()).collect()
+        };
+
+        let human_readable_results = if result.is_empty() {
+            vec![]
+        } else {
+            let mut human_readable_results = Vec::with_capacity(result.len());
+            let max_row_size = table_meta.fields_metadata.values()
+                .map(|x| x.1.size)
+                .max()
+                .unwrap();
+
+            let mut row_buf = vec![0; max_row_size];
+            let row_buf_ptr = row_buf.as_mut_ptr();
+
+            for row in &result {
+                let mut values = Vec::with_capacity(fields_name.len());
+
+                for field_name in &fields_name {
+                    let field_meta = table_meta.get_field_metadata(field_name)?;
+                    copy_nonoverlapping(row[field_meta.offset..field_meta.offset + field_meta.size].as_ptr(), row_buf_ptr, field_meta.size);
+                    let value = Value::from_ptr(&field_meta.data_def.data_type, row_buf[..field_meta.size].as_ptr());
+                    values.push(value);
+                }
+
+                human_readable_results.push(RowValues::new(values))
+            }
+            human_readable_results
+        };
+
+        Ok(SelectResult::new(fields_name, human_readable_results))
     }
 }
 
@@ -522,7 +557,7 @@ impl TryFrom<String> for Operator {
 }
 
 #[derive(Debug)]
-pub(crate) enum Value {
+pub enum Value {
     INTEGER(i32),
     FLOAT(f32),
     BOOLEAN(bool),
@@ -534,8 +569,8 @@ pub(crate) enum Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match self {
-            Value::INTEGER(i) => { *i == other.unwrap_into_int().unwrap() }
-            Value::FLOAT(f) => { *f == other.unwrap_into_float().unwrap() }
+            Value::INTEGER(i) => { *i == other.unwrap_as_int().unwrap() }
+            Value::FLOAT(f) => { *f == other.unwrap_as_float().unwrap() }
             Value::BOOLEAN(b) => { *b == other.unwrap_into_bool().unwrap() }
             Value::STRING(s) => { s == other.unwrap_as_string().unwrap() }
             Value::ARRAY(a) => { a == other.unwrap_as_array().unwrap() }
@@ -547,8 +582,8 @@ impl PartialEq for Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self {
-            Value::INTEGER(i) => { i.partial_cmp(&other.unwrap_into_int().unwrap()) }
-            Value::FLOAT(f) => { f.partial_cmp(&other.unwrap_into_float().unwrap()) }
+            Value::INTEGER(i) => { i.partial_cmp(&other.unwrap_as_int().unwrap()) }
+            Value::FLOAT(f) => { f.partial_cmp(&other.unwrap_as_float().unwrap()) }
             Value::BOOLEAN(b) => { b.partial_cmp(&other.unwrap_into_bool().unwrap()) }
             Value::STRING(s) => { s.partial_cmp(&other.unwrap_as_string().unwrap()) }
             Value::ARRAY(a) => { None }
@@ -584,14 +619,14 @@ impl Value {
         }
     }
 
-    pub fn unwrap_into_int(&self) -> Result<i32, &str> {
+    pub fn unwrap_as_int(&self) -> Result<i32, &str> {
         match self {
             Value::INTEGER(v) => Ok(*v),
             _ => Err("Current Value is not an Integer.")
         }
     }
 
-    pub fn unwrap_into_float(&self) -> Result<f32, &str> {
+    pub fn unwrap_as_float(&self) -> Result<f32, &str> {
         match self {
             Value::FLOAT(v) => Ok(*v),
             _ => Err("Current Value is not a Float.")
@@ -626,6 +661,13 @@ impl Value {
         }
     }
 
+    pub(crate) fn is_array(&self) -> bool {
+        match self {
+            Value::ARRAY(_) => true,
+            _ => false
+        }
+    }
+
     pub fn from_bytes(key_type: &DataType, bytes: &[u8]) -> Value {
         Self::from_ptr(key_type, bytes.as_ptr())
     }
@@ -636,6 +678,7 @@ impl Value {
                 DataType::TEXT(size) => {
                     let mut bytes = Vec::<u8>::with_capacity(*size);
                     ptr::copy_nonoverlapping(src, bytes.as_mut_ptr(), *size);
+                    bytes.set_len(*size);
                     Value::STRING(u8_array_to_string(bytes.as_slice()))
                 }
                 DataType::INTEGER => {
