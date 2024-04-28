@@ -3,6 +3,7 @@ extern crate core;
 use std::io::{Read, Write};
 use std::{fs, ptr};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use crate::build_path;
@@ -197,22 +198,24 @@ pub(crate) type Page = [u8; PAGE_SIZE];
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct RowBytes {
-    pub data: Box<[u8]>
+    pub data: Vec<u8>
+}
+
+impl Deref for RowBytes {
+    type Target = Vec<u8>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
 }
 
 impl RowBytes {
-    fn new_indexed_row(data: Box<[u8]>) -> RowBytes {
-        RowBytes {
-            data
-        }
-    }
-
     pub(crate) fn serialize_row(&self, destination: *mut u8) {
         unsafe {
             ptr::copy_nonoverlapping(
-                self.data.as_ptr(),
+                self.as_ptr(),
                 destination,
-                self.data.len(),
+                self.len(),
             );
         }
     }
@@ -229,12 +232,12 @@ impl RowBytes {
         }
 
         RowBytes {
-            data: data.into_boxed_slice()
+            data
         }
     }
 
     pub fn read_key(&self, key_type: &DataType, key_offset: usize, key_size: usize) -> Value {
-        Value::from_bytes(key_type, &self.data[key_offset..key_offset + key_size])
+        Value::from_bytes(key_type, &self[key_offset..key_offset + key_size])
     }
 }
 
@@ -253,21 +256,27 @@ impl<'a> SelectResult<'a> {
 }
 
 pub struct RowToInsert<'a> {
-    pub(crate) fields: Vec<(&'a String, &'a Value)>,
+    pub(crate) field_value_pairs: Vec<(&'a String, &'a Value)>,
+    pub(crate) raw_data: RowBytes,
 }
 
 impl<'a> RowToInsert<'a> {
-    pub fn new(fields: Vec<(&'a String, &'a Value)>) -> RowToInsert {
+    pub fn new(fields: &'a Vec<String>, values: &'a Vec<Value>, table_meta: &TableStructureMetadata) -> RowToInsert<'a> {
+        let field_value_pairs: Vec<(&String, &Value)> = fields.iter().zip(values.iter()).collect();
+
+        let bytes = Self::to_bytes(&field_value_pairs, table_meta);
         RowToInsert{
-            fields
+            field_value_pairs,
+            raw_data: bytes
         }
     }
-    pub fn to_bytes(&self, table_meta: &TableStructureMetadata) -> RowBytes {
-        let mut bytes = vec![0; table_meta.row_size];
-        let buf = bytes.as_mut_ptr();
+
+    pub fn to_bytes(field_value_pair: &Vec<(&'a String, &'a Value)>, table_meta: &TableStructureMetadata) -> RowBytes {
+        let mut data = vec![0; table_meta.row_size];
+        let buf = data.as_mut_ptr();
 
         unsafe {
-            for (name, value) in &self.fields {
+            for (name, value) in field_value_pair {
                 let field_meta = table_meta.get_field_metadata(name).unwrap();
                 match value {
                     Value::INTEGER(i) => { copy_nonoverlapping(i as *const i32 as *const u8, buf.add(field_meta.offset), field_meta.size); }
@@ -279,8 +288,9 @@ impl<'a> RowToInsert<'a> {
                 }
             }
         }
+
         RowBytes {
-            data: bytes.as_slice().into()
+            data
         }
     }
 }
