@@ -434,7 +434,7 @@ impl<'a> OrderByExprParser<'a> {
             check_valid_field_name(&field)?;
             check_key_word(&field)?;
             self.sql_parser.skip_white_spaces();
-            let mut order: Order;
+            let order: Order;
             if self.sql_parser.is_end() || self.sql_parser.current_char() == ',' {
                 order = Order::ASC;
             } else {

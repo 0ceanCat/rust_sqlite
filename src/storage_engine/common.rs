@@ -1,11 +1,12 @@
 extern crate core;
 
-use std::io::{Read, Write};
+use std::io::{Write};
 use std::{fs, ptr};
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use prettytable::Row;
 use crate::build_path;
 use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Value};
 use crate::utils::utils::{copy, copy_nonoverlapping, list_files_of_folder, u8_array_to_string};
@@ -13,7 +14,7 @@ use crate::storage_engine::config::*;
 use crate::storage_engine::tables::{BtreeTable, SequentialTable, Table};
 
 pub struct TableManager {
-    tables: HashMap<String, (Rc<TableStructureMetadata>, Vec<(Box<dyn Table>)>)>,
+    tables: HashMap<String, (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>)>,
 }
 
 impl TableManager {
@@ -35,7 +36,7 @@ impl TableManager {
 
     pub fn get_tables(&mut self, table_name: &str) -> Result<&mut Vec<Box<dyn Table>>, String> {
         if !self.tables.contains_key(table_name) {
-            self.load_tables(table_name);
+            self.load_tables(table_name).unwrap();
         }
 
         let result: &mut (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) = self.tables.get_mut(table_name).unwrap();
@@ -71,15 +72,6 @@ impl TableManager {
         }
     }
 
-    pub fn is_field_of_table(&mut self, table_name: &str, field_name: &str) -> bool {
-        self.get_field_metadata(table_name, field_name).is_ok()
-    }
-
-    pub fn get_field_metadata(&mut self, table_name: &str, field_name: &str) -> Result<&FieldMetadata, String> {
-        let map = self.get_table_metadata(table_name)?;
-        map.get_field_metadata(field_name)
-    }
-
     pub fn get_table_metadata(&mut self, table_name: &str) -> Result<&TableStructureMetadata, String> {
         if self.tables.is_empty() {
             self.load_tables(table_name)?;
@@ -108,15 +100,10 @@ impl TableManager {
     }
 
     pub fn print_btree(&mut self, table_name: &str) {
-        match self.tables.get_mut(table_name) {
-            None => {}
-            Some(table) => {
-                // table.print_tree(0, 0)
-            }
-        }
+        println!("{}", table_name)
     }
 
-    unsafe fn load_metadata_from_disk(path: &Path) -> Result<Vec<(String, u32, FieldMetadata)>, String> {
+    unsafe fn load_metadata_from_disk(path: &Path) -> Result<Vec<(String, u32, Rc<FieldMetadata>)>, String> {
         let metadata = fs::read(path).unwrap();
         let mut metadata_pointer = 0; // pointer that points to the position where we should start reading
 
@@ -124,7 +111,7 @@ impl TableManager {
         let fields_number: usize = 0;
         copy_nonoverlapping(ptr, &fields_number as *const usize as *mut u8, FIELD_NUMBER_SIZE);
         metadata_pointer += FIELD_NUMBER_SIZE;
-        let mut fields: Vec<(String, u32, FieldMetadata)> = Vec::with_capacity(fields_number);
+        let mut fields: Vec<(String, u32, Rc<FieldMetadata>)> = Vec::with_capacity(fields_number);
 
         let data_type_mask: u8 = 0b0000_0000;
         let primary: u8 = 0b0000_0001;
@@ -166,30 +153,12 @@ impl TableManager {
 
             let definition = FieldDefinition::new(u8_array_to_string(&buf), data_type, is_primary);
 
-            fields.push((u8_array_to_string(&buf), i as u32, FieldMetadata::new(definition, value_offset, size)));
+            fields.push((u8_array_to_string(&buf), i as u32, Rc::new(FieldMetadata::new(definition, value_offset, size))));
 
             value_offset += size;
         }
 
         Ok(fields)
-    }
-
-    fn load_data_type(byte: u8) {
-        let second_bit_mask: u8 = 0b0000_0010;
-        let third_bit_mask: u8 = 0b0000_0100;
-
-        let second_bit = (byte & second_bit_mask) != 0;
-        let third_bit = (byte & third_bit_mask) != 0;
-
-        if !second_bit && !third_bit {
-            println!("Flag 0 is set");
-        } else if !second_bit && third_bit {
-            println!("Flag 1 is set");
-        } else if second_bit && !third_bit {
-            println!("Flag 2 is set");
-        } else {
-            println!("Flag 3 is set");
-        }
     }
 }
 
@@ -255,20 +224,15 @@ impl<'a> SelectResult<'a> {
     }
 
     pub(crate) fn print(&self) {
-        let fs = &self.fields;
+        let mut table = prettytable::Table::new();
 
-        for values in &self.rows {
-            let mut s = String::new();
-            for i in 0..fs.len() {
-                s.push_str(fs[i]);
-                s.push_str(": ");
-                s.push_str(values[i].to_string().as_str());
-                s.push_str(", ");
-            }
-            s.remove(s.len() - 1);
-            s.remove(s.len() - 1);
-            println!("{}", s)
-        }
+        table.add_row(Row::new(self.fields.iter().map(|f| prettytable::Cell::new(f)).collect()));
+
+        self.rows.iter().for_each(|r| {
+            table.add_row(Row::new(r.fields.iter().map(|f| prettytable::Cell::new(f.to_string().as_str())).collect()));
+        });
+
+        table.printstd();
     }
 }
 
@@ -354,10 +318,19 @@ pub struct TableStructureMetadata {
 }
 
 impl TableStructureMetadata {
-    fn new(table_name: &str, fields_metadata: Vec<(String, u32, FieldMetadata)>) -> TableStructureMetadata {
-        let row_size = fields_metadata.iter().map(|(_, _, m)| m.size).reduce(|a, b| a + b).unwrap();
-        let fields_meta_map: HashMap<String, (u32, Rc<FieldMetadata>)> = fields_metadata.into_iter().map(|(name, offset, m)| (name, (offset, Rc::new(m)))).collect();
-        let fields = fields_meta_map.values().map(|(_, m)| Rc::clone(m)).collect();
+    fn new(table_name: &str, fields_metadata: Vec<(String, u32, Rc<FieldMetadata>)>) -> TableStructureMetadata {
+        let row_size = fields_metadata.iter()
+                                            .map(|(_, _, m)| m.size)
+                                            .reduce(|a, b| a + b)
+                                            .unwrap();
+
+        let fields = fields_metadata.iter()
+                                                            .map(|(_, _, m)| Rc::clone(m))
+                                                            .collect();
+
+        let fields_meta_map: HashMap<String, (u32, Rc<FieldMetadata>)> = fields_metadata.into_iter()
+                                                                                        .map(|(name, offset, m)| (name, (offset, Rc::clone(&m))))
+                                                                                        .collect();
         TableStructureMetadata {
             table_name: table_name.to_string(),
             row_size,

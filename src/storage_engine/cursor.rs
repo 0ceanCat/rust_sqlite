@@ -2,8 +2,6 @@ use std::ops::{Deref, DerefMut};
 use crate::storage_engine::tables::{Table};
 
 pub struct Cursor {
-    started_at_page: usize,
-    started_at_cell: usize,
     pub page_index: usize,
     pub cell_index: usize,
     pub end_of_table: bool,
@@ -13,19 +11,11 @@ pub struct Cursor {
 impl Cursor {
     fn new(page_index: usize, cell_index: usize, end_of_table: bool, row_size: usize) -> Cursor {
         Cursor {
-            started_at_page: page_index,
-            started_at_cell: cell_index,
             page_index,
             cell_index,
             end_of_table,
             row_size,
         }
-    }
-
-    fn reset(&mut self) {
-        self.page_index = self.started_at_page;
-        self.cell_index = self.started_at_cell;
-        self.end_of_table = false;
     }
 }
 

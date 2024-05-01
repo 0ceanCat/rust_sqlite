@@ -1,13 +1,13 @@
 pub struct BtreeLeafNodeBodyLayout {
-    pub LEAF_NODE_KEY_SIZE: usize,
-    pub LEAF_NODE_KEY_OFFSET: usize,
-    pub LEAF_NODE_VALUE_SIZE: usize,
-    pub LEAF_NODE_VALUE_OFFSET: usize,
-    pub LEAF_NODE_CELL_SIZE: usize,
-    pub LEAF_NODE_SPACE_FOR_CELLS: usize,
-    pub LEAF_NODE_MAX_CELLS: usize,
-    pub LEAF_NODE_RIGHT_SPLIT_COUNT: usize,
-    pub LEAF_NODE_LEFT_SPLIT_COUNT: usize,
+    pub leaf_node_key_size: usize,
+    pub leaf_node_key_offset: usize,
+    pub leaf_node_value_size: usize,
+    pub leaf_node_value_offset: usize,
+    pub leaf_node_cell_size: usize,
+    pub leaf_node_space_for_cells: usize,
+    pub leaf_node_max_cells: usize,
+    pub leaf_node_right_split_count: usize,
+    pub leaf_node_left_split_count: usize,
 }
 
 impl BtreeLeafNodeBodyLayout {
@@ -23,15 +23,15 @@ impl BtreeLeafNodeBodyLayout {
         let leaf_node_left_split_count: usize = (leaf_node_max_cells + 1) - leaf_node_right_split_count;
 
         BtreeLeafNodeBodyLayout {
-            LEAF_NODE_KEY_SIZE: leaf_node_key_size,
-            LEAF_NODE_KEY_OFFSET: leaf_node_key_offset,
-            LEAF_NODE_VALUE_SIZE: leaf_node_value_size,
-            LEAF_NODE_VALUE_OFFSET: leaf_node_value_offset,
-            LEAF_NODE_CELL_SIZE: leaf_node_cell_size,
-            LEAF_NODE_SPACE_FOR_CELLS: leaf_node_space_for_cells,
-            LEAF_NODE_MAX_CELLS: leaf_node_max_cells,
-            LEAF_NODE_RIGHT_SPLIT_COUNT: leaf_node_right_split_count,
-            LEAF_NODE_LEFT_SPLIT_COUNT: leaf_node_left_split_count,
+            leaf_node_key_size: leaf_node_key_size,
+            leaf_node_key_offset: leaf_node_key_offset,
+            leaf_node_value_size: leaf_node_value_size,
+            leaf_node_value_offset: leaf_node_value_offset,
+            leaf_node_cell_size: leaf_node_cell_size,
+            leaf_node_space_for_cells: leaf_node_space_for_cells,
+            leaf_node_max_cells: leaf_node_max_cells,
+            leaf_node_right_split_count: leaf_node_right_split_count,
+            leaf_node_left_split_count: leaf_node_left_split_count,
         }
     }
 }

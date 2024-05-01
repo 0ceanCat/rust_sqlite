@@ -1,6 +1,5 @@
 use std::cmp::{Ordering, PartialEq, PartialOrd};
 use std::{fs, ptr};
-use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,48 +7,14 @@ use std::rc::Rc;
 use crate::build_path;
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 use crate::storage_engine::config::*;
-use crate::storage_engine::common::{FieldMetadata, RowValues, RowBytes, RowToInsert, SelectResult, TableManager};
+use crate::storage_engine::common::{RowValues, RowBytes, RowToInsert, SelectResult, TableManager, TableStructureMetadata};
 use crate::storage_engine::tables::{Table};
 use crate::utils::utils::{copy_nonoverlapping, is_folder_empty, ToU8, u8_array_to_string};
-
-pub(crate) trait Printable {
-    fn print_stmt(&self) {}
-}
 
 pub(crate) enum SqlStmt {
     SELECT(SelectStmt),
     INSERT(InsertStmt),
     CREATE(CreateStmt),
-}
-
-impl Printable for SelectStmt {
-    fn print_stmt(&self) {
-        println!("selected fields: {:?}", self.selected_fields);
-        println!("table name: {:?}", self.table);
-        println!("where stmt: {:?}", self.where_expr);
-        println!("order by stmt: {:?}", self.order_by_expr);
-    }
-}
-
-impl Printable for WhereExpr {
-    fn print_stmt(&self) {
-        println!("{:?}", self.condition_cluster)
-    }
-}
-
-impl Printable for InsertStmt {
-    fn print_stmt(&self) {
-        println!("table name: {}", self.table);
-        println!("fields: {:?}", self.fields);
-        println!("values: {:?}", self.values);
-    }
-}
-
-impl Printable for CreateStmt {
-    fn print_stmt(&self) {
-        println!("table name: {}", self.table);
-        println!("defined fields: {:?}", self.definitions);
-    }
 }
 
 #[derive(PartialEq, Debug, PartialOrd)]
@@ -70,17 +35,6 @@ impl SelectStmt {
         }
     }
 
-    fn table_file(&self) -> Result<File, String> {
-        match OpenOptions::new().read(true).open(&self.table) {
-            Ok(file) => {
-                Ok(file)
-            }
-            Err(_) => {
-                Err(format!("Table {} does not exist.", self.table))
-            }
-        }
-    }
-
     pub(crate) fn execute<'a>(&'a mut self, table_manager: &'a mut TableManager) -> Result<SelectResult, String> {
         let table = table_manager.get_tables(&self.table)?.iter_mut().next();
         if table.is_none() {
@@ -89,15 +43,7 @@ impl SelectStmt {
 
         let table = table.unwrap();
 
-        // condition match
-        let result = match &self.where_expr {
-            None => {
-                table.get_all()
-            }
-            Some(w) => {
-                w.execute(table)
-            }
-        };
+        let result = self.execute_where(table);
 
         let table_meta = table_manager.get_table_metadata(&self.table)?;
 
@@ -108,25 +54,32 @@ impl SelectStmt {
         };
 
         let order_by_exprs = self.order_by_expr.take()
-            .unwrap_or_else(|| OrderByCluster::new(vec![]))
-            .order_by_exprs;
+                                                                .unwrap_or_else(|| OrderByCluster::new(vec![]))
+                                                                .order_by_exprs;
 
-        let mut order_by_fields: Vec<&str> = order_by_exprs.iter()
-                                                            .map(|o| o.field.as_str())
-                                                            .collect();
+        let projected_results = self.order_by(order_by_exprs, &result, table_meta, &selected_fields)?;
 
+        let human_readable_results = projected_results.into_iter().map(|(v, _)| v).collect();
+
+        Ok(SelectResult::new(selected_fields, human_readable_results))
+    }
+
+    fn order_by(&self, order_by_exprs: Vec<OrderByExpr>, result: &Vec<RowBytes>, table_meta: &TableStructureMetadata, selected_fields: &Vec<&str>) -> Result<Vec<(RowValues, Vec<Rc<Value>>)>, String> {
+        let order_by_fields: Vec<&str> = order_by_exprs.iter()
+            .map(|o| o.field.as_str())
+            .collect();
 
         let max_row_size = table_meta.fields.iter()
-                                                .map(|x| x.size)
-                                                .max()
-                                                .unwrap();
+            .map(|x| x.size)
+            .max()
+            .unwrap();
 
         let mut row_buf = vec![0; max_row_size];
         let row_buf_ptr = row_buf.as_mut_ptr();
 
         let mut projected_results: Vec<(RowValues, Vec<Rc<Value>>)> = Vec::with_capacity(result.len());
 
-        for row in &result {
+        for row in result {
             let mut selected_values: Vec<Rc<Value>> = Vec::with_capacity(selected_fields.len());
             let mut order_values: Vec<Rc<Value>> = Vec::with_capacity(order_by_fields.len());
             let mut value_index: Vec<(usize, usize)> = Vec::new();
@@ -137,7 +90,7 @@ impl SelectStmt {
                 let value = Rc::new(Value::from_ptr(&field_meta.data_def.data_type, row_buf[..field_meta.size].as_ptr()));
 
                 let mut i = 0;
-                if order_by_fields.iter().any(|v|{
+                if order_by_fields.iter().any(|v| {
                     i += 1;
                     v == field_name
                 }) {
@@ -158,7 +111,6 @@ impl SelectStmt {
                     copy_nonoverlapping(row[field_meta.offset..field_meta.offset + field_meta.size].as_ptr(), row_buf_ptr, field_meta.size);
                     let value = Rc::new(Value::from_ptr(&field_meta.data_def.data_type, row_buf[..field_meta.size].as_ptr()));
                     order_values.push(Rc::clone(&value));
-
                 }
             }
 
@@ -181,9 +133,18 @@ impl SelectStmt {
             Ordering::Equal
         });
 
-        let human_readable_results = projected_results.into_iter().map(|(v, _)| v).collect();
+        Ok(projected_results)
+    }
 
-        Ok(SelectResult::new(selected_fields, human_readable_results))
+    fn execute_where(&mut self, table: &mut Box<dyn Table>) -> Vec<RowBytes> {
+        match &self.where_expr {
+            None => {
+                table.get_all()
+            }
+            Some(w) => {
+                w.execute(table)
+            }
+        }
     }
 }
 
@@ -191,8 +152,8 @@ impl SelectStmt {
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct InsertStmt {
     table: String,
-    fields: Vec<String>,
-    values: Vec<Value>,
+    pub fields: Vec<String>,
+    pub values: Vec<Value>,
 }
 
 impl InsertStmt {
@@ -204,50 +165,26 @@ impl InsertStmt {
         }
     }
 
-    pub fn execute(&self, table_manager: &mut TableManager) -> Result<(), String> {
+    pub fn execute(&mut self, table_manager: &mut TableManager) -> Result<(), String> {
         let meta = table_manager.get_table_metadata(&self.table)?;
-        match self.fields.iter().filter(|f| meta.get_field_metadata(f).is_err()).next() {
-            None => {}
-            Some(field) => {
-                return Err(format!("Field `{}` not found in table `{}`.", field, self.table));
-            }
-        };
+        if self.fields.len() == 1 && self.fields.first().unwrap() == "*" {
+            self.fields = meta.fields.iter().map(|f| f.data_def.field_name.to_string()).collect();
+        } else {
+            match self.fields.iter().filter(|f| meta.get_field_metadata(f).is_err()).next() {
+                None => {}
+                Some(field) => {
+                    return Err(format!("Field `{}` not found in table `{}`.", field, self.table));
+                }
+            };
+        }
+
         let row = RowToInsert::new(&self.fields, &self.values, table_manager.get_table_metadata(&self.table)?);
-        let mut tables = table_manager.get_tables(&self.table)?;
-        for mut table in tables.iter_mut() {
+        let tables = table_manager.get_tables(&self.table)?;
+
+        for table in tables.iter_mut() {
             table.insert(&row)?;
         }
         Ok(())
-    }
-
-    fn check_folder(&self, path: &Path) -> Result<(), String> {
-        match fs::metadata(path) {
-            Ok(metadata) => {
-                if metadata.is_file() {
-                    return Err(format!("Can not load table '{}' from disk.", self.table));
-                } else {
-                    Ok(())
-                }
-            }
-            Err(_) => {
-                match fs::create_dir(path) {
-                    Ok(_) => { Ok(()) }
-                    Err(_) => {
-                        Err(format!("Can not create table '{}' in disk.", self.table))
-                    }
-                }
-            }
-        }
-    }
-
-    fn check_data_file(&self) {
-        let mut path = PathBuf::new();
-        path.push(DATA_FOLDER);
-        path.push(&self.table);
-        if is_folder_empty(&path) {
-            path.push(format!("{}_main", &self.table));
-            let _ = File::create(path);
-        }
     }
 }
 
@@ -303,7 +240,7 @@ impl CreateStmt {
                 Ok(file) => {
                     self.write_structure_metadata(file)?
                 }
-                Err(e) => {
+                Err(_) => {
                     return Err(String::from("Can not create table."));
                 }
             }
@@ -319,7 +256,7 @@ impl CreateStmt {
                 Some(f) => {
                     let primary_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".idx");
                     let primary_file = File::create(&primary_path).unwrap();
-                    self.write_index_metadata(primary_file, f, row_size)?;
+                    self.write_index_metadata(primary_file, f)?;
                     table_manager.register_new_table(&self.table, &primary_path)
                 }
             }
@@ -363,7 +300,7 @@ impl CreateStmt {
         Ok(())
     }
 
-    unsafe fn write_index_metadata(&self, mut file: File, primary_field: &FieldDefinition, row_size: usize) -> Result<(), String> {
+    unsafe fn write_index_metadata(&self, mut file: File, primary_field: &FieldDefinition) -> Result<(), String> {
         let mut vec: [u8; BTREE_METADATA_SIZE] = [0; BTREE_METADATA_SIZE];
         let buf = vec.as_mut_ptr();
         let mut buf_pointer = 0; // pointer that points to the position where we should start reading
@@ -640,7 +577,7 @@ impl PartialEq for Value {
             Value::BOOLEAN(b) => { *b == other.unwrap_into_bool().unwrap() }
             Value::STRING(s) => { s == other.unwrap_as_string().unwrap() }
             Value::ARRAY(a) => { a == other.unwrap_as_array().unwrap() }
-            Value::SelectStmt(s) => { other.is_select_stmt() }
+            Value::SelectStmt(_) => { other.is_select_stmt() }
         }
     }
 }
@@ -652,8 +589,8 @@ impl PartialOrd for Value {
             Value::FLOAT(f) => { f.partial_cmp(&other.unwrap_as_float().unwrap()) }
             Value::BOOLEAN(b) => { b.partial_cmp(&other.unwrap_into_bool().unwrap()) }
             Value::STRING(s) => { s.partial_cmp(&other.unwrap_as_string().unwrap()) }
-            Value::ARRAY(a) => { None }
-            Value::SelectStmt(s) => { None }
+            Value::ARRAY(_) => { None }
+            Value::SelectStmt(_) => { None }
         }
     }
 }

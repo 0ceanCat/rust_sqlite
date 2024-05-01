@@ -176,20 +176,20 @@ impl BtreePager {
 
     pub(crate) fn get_leaf_node_cell_key(&self, page: *const u8, cell_index: usize, key_type: &DataType) -> Value {
         unsafe {
-            Value::from_ptr(key_type, page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.LEAF_NODE_CELL_SIZE))
+            Value::from_ptr(key_type, page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.leaf_node_cell_size))
         }
     }
 
     pub(crate) fn set_leaf_node_cell_key(&self, page: *mut u8, cell_index: usize, key_size: usize, key: &Value) {
         unsafe {
-            let dst = page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.LEAF_NODE_CELL_SIZE);
+            let dst = page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.leaf_node_cell_size);
             Self::set_key(key_size, key, dst)
         }
     }
 
     pub(crate) fn leaf_node_cell(&self, page: *mut u8, cell_index: usize) -> *mut u8 {
         unsafe {
-            let page_ptr = page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.LEAF_NODE_CELL_SIZE);
+            let page_ptr = page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.leaf_node_cell_size);
             page_ptr
         }
     }
@@ -197,7 +197,7 @@ impl BtreePager {
     pub(crate) fn get_leaf_node_value(&self, page: *mut u8, cell_index: usize) -> *mut u8 {
         let ptr = self.leaf_node_cell(page, cell_index);
         unsafe {
-            ptr.add(self.btree_leaf_node_body_layout.LEAF_NODE_VALUE_OFFSET)
+            ptr.add(self.btree_leaf_node_body_layout.leaf_node_value_offset)
         }
     }
 
@@ -464,7 +464,6 @@ impl BtreePager {
 
 pub struct SequentialPager {
     abstract_pager: AbstractPager,
-    size: usize
 }
 
 impl SequentialPager {
@@ -476,12 +475,7 @@ impl SequentialPager {
         let total_pages = size / PAGE_SIZE;
         SequentialPager {
             abstract_pager: AbstractPager::new(total_pages, file),
-            size
         }
-    }
-
-    pub fn get_pager_total_size(&self) -> usize {
-        self.size
     }
 
     pub fn get_num_cells(page: *const u8) -> usize {

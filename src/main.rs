@@ -2,9 +2,6 @@ mod storage_engine;
 mod sql_engine;
 mod utils;
 
-
-use std::cmp::Ordering;
-use std::io::{Read, Write};
 use crate::sql_engine::sql_parser::SqlParser;
 use crate::sql_engine::sql_structs::SqlStmt;
 use crate::storage_engine::common::*;
@@ -37,7 +34,7 @@ fn main() -> Result<(), String> {
                 let result = select.execute(&mut table_manager)?;
                 result.print();
             }
-            SqlStmt::INSERT(insert) => {
+            SqlStmt::INSERT(mut insert) => {
                 println!("{:?}", match insert.execute(&mut table_manager) {
                     Ok(_) => {
                         String::from("Data inserted.")

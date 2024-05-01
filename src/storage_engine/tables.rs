@@ -9,7 +9,7 @@ use crate::storage_engine::config::*;
 use crate::storage_engine::common::{RowBytes, RowToInsert, TableStructureMetadata};
 use crate::storage_engine::cursor::{ReadCursor, WriteReadCursor};
 use crate::storage_engine::enums::NodeType;
-use crate::storage_engine::pagers::{BtreePager, Pager, SequentialPager};
+use crate::storage_engine::pagers::{BtreePager, SequentialPager};
 use crate::utils::utils::{copy, copy_nonoverlapping, indent, u8_array_to_string};
 
 pub trait Table {
@@ -67,7 +67,7 @@ impl Table for BtreeTable {
 
         let page = self.pager.get_or_create_page(page_index);
         let num_cells = BtreePager::get_leaf_node_num_cells(page);
-        if num_cells >= self.pager.get_body_layout().LEAF_NODE_MAX_CELLS {
+        if num_cells >= self.pager.get_body_layout().leaf_node_max_cells {
             self.split_and_insert(page_index, cell_index, &row.raw_data);
         } else {
             self.move_and_insert(page_index, cell_index, &row.raw_data);
@@ -209,7 +209,8 @@ impl Table for BtreeTable {
     }
 
     fn print_tree(&self, page_index: usize, cell_index: usize) {
-        todo!()
+        println!("{}", page_index);
+        println!("{}", cell_index);
     }
 }
 
@@ -261,17 +262,15 @@ impl BtreeTable {
             }
         };
 
-        unsafe {
-            if condition_expr.value.is_array() {
-                let array = condition_expr.value.unwrap_as_array().unwrap();
-                for v in array {
-                    scan_until_not_satisfies(v);
-                }
-            } else {
-                scan_until_not_satisfies(&condition_expr.value);
+        if condition_expr.value.is_array() {
+            let array = condition_expr.value.unwrap_as_array().unwrap();
+            for v in array {
+                scan_until_not_satisfies(v);
             }
-
+        } else {
+            scan_until_not_satisfies(&condition_expr.value);
         }
+
         result
     }
 
@@ -351,16 +350,16 @@ impl BtreeTable {
           evenly between old (left) and new (right) nodes.
           Starting from the right, move each key to correct position.
         */
-        for i in (0..=self.pager.get_body_layout().LEAF_NODE_MAX_CELLS).rev() {
+        for i in (0..=self.pager.get_body_layout().leaf_node_max_cells).rev() {
             let destination_node;
-            if i >= self.pager.get_body_layout().LEAF_NODE_LEFT_SPLIT_COUNT {
+            if i >= self.pager.get_body_layout().leaf_node_left_split_count {
                 // upper halves (right halves) will be stored in the new_node
                 destination_node = new_node;
             } else {
                 destination_node = old_node;
             }
             // index_within_node will always decrement until it arrives to 0, then destination_node will be switched to old_node
-            let index_within_node = i % self.pager.get_body_layout().LEAF_NODE_LEFT_SPLIT_COUNT;
+            let index_within_node = i % self.pager.get_body_layout().leaf_node_left_split_count;
             let cell_pointer = self.pager.leaf_node_cell(destination_node, index_within_node);
 
             if i == cell_index {
@@ -371,14 +370,14 @@ impl BtreeTable {
                 row.serialize_row(self.pager.get_leaf_node_value(destination_node, index_within_node));
             } else if i > cell_index {
                 // copy a node from old_node tail (position i - 1), to destination_node (index_within_node)
-                copy(self.pager.leaf_node_cell(old_node, i - 1), cell_pointer, self.pager.get_body_layout().LEAF_NODE_CELL_SIZE);
+                copy(self.pager.leaf_node_cell(old_node, i - 1), cell_pointer, self.pager.get_body_layout().leaf_node_cell_size);
             } else {
-                copy(self.pager.leaf_node_cell(old_node, i), cell_pointer, self.pager.get_body_layout().LEAF_NODE_CELL_SIZE);
+                copy(self.pager.leaf_node_cell(old_node, i), cell_pointer, self.pager.get_body_layout().leaf_node_cell_size);
             }
         }
 
-        BtreePager::set_leaf_node_cells_num(old_node, self.pager.get_body_layout().LEAF_NODE_LEFT_SPLIT_COUNT);
-        BtreePager::set_leaf_node_cells_num(new_node, self.pager.get_body_layout().LEAF_NODE_RIGHT_SPLIT_COUNT);
+        BtreePager::set_leaf_node_cells_num(old_node, self.pager.get_body_layout().leaf_node_left_split_count);
+        BtreePager::set_leaf_node_cells_num(new_node, self.pager.get_body_layout().leaf_node_right_split_count);
 
         if BtreePager::is_root_node(old_node) {
             self.create_new_root(new_page_index);
@@ -401,7 +400,7 @@ impl BtreeTable {
         if cell_index < num_cells {
             copy(self.pager.leaf_node_cell(page, cell_index),
                  self.pager.leaf_node_cell(page, cell_index + 1),
-                 self.pager.get_body_layout().LEAF_NODE_CELL_SIZE * (num_cells - cell_index))
+                 self.pager.get_body_layout().leaf_node_cell_size * (num_cells - cell_index))
         }
         let key = row.read_key(&self.key_type, self.key_offset_in_row, self.key_size);
         self.pager.set_leaf_node_cell_key(page, cell_index, self.key_size, &key);
@@ -696,7 +695,7 @@ impl BtreeTable {
                 indent(indentation_level);
                 println!("- internal (size {})", num_keys);
                 if num_keys > 0 {
-                    let mut child: usize = 0;
+                    let child: usize;
                     for i in 0..num_keys {
                         let child = BtreePager::get_internal_node_child(node, i);
                         self.print_tree(child, indentation_level + 1);
@@ -1000,6 +999,7 @@ impl Table for SequentialTable {
     }
 
     fn print_tree(&self, page_index: usize, cell_index: usize) {
-        todo!()
+        println!("{}", page_index);
+        println!("{}", cell_index);
     }
 }
