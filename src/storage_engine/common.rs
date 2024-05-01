@@ -102,8 +102,8 @@ impl TableManager {
     }
 
     pub fn flash_to_disk(&mut self) {
-        for table in self.tables.values_mut() {
-            //table.flush_to_disk();
+        for (_, tables) in self.tables.values_mut() {
+            tables.iter_mut().for_each(|t| t.flush_to_disk())
         }
     }
 
@@ -116,7 +116,7 @@ impl TableManager {
         }
     }
 
-    unsafe fn load_metadata_from_disk(path: &Path) -> Result<HashMap<String, (u32, FieldMetadata)>, String> {
+    unsafe fn load_metadata_from_disk(path: &Path) -> Result<Vec<(String, u32, FieldMetadata)>, String> {
         let metadata = fs::read(path).unwrap();
         let mut metadata_pointer = 0; // pointer that points to the position where we should start reading
 
@@ -124,7 +124,7 @@ impl TableManager {
         let fields_number: usize = 0;
         copy_nonoverlapping(ptr, &fields_number as *const usize as *mut u8, FIELD_NUMBER_SIZE);
         metadata_pointer += FIELD_NUMBER_SIZE;
-        let mut map: HashMap<String, (u32, FieldMetadata)> = HashMap::with_capacity(fields_number);
+        let mut fields: Vec<(String, u32, FieldMetadata)> = Vec::with_capacity(fields_number);
 
         let data_type_mask: u8 = 0b0000_0000;
         let primary: u8 = 0b0000_0001;
@@ -166,12 +166,12 @@ impl TableManager {
 
             let definition = FieldDefinition::new(u8_array_to_string(&buf), data_type, is_primary);
 
-            map.insert(u8_array_to_string(&buf), (i as u32, FieldMetadata::new(definition, value_offset, size)));
+            fields.push((u8_array_to_string(&buf), i as u32, FieldMetadata::new(definition, value_offset, size)));
 
             value_offset += size;
         }
 
-        Ok(map)
+        Ok(fields)
     }
 
     fn load_data_type(byte: u8) {
@@ -313,11 +313,11 @@ impl<'a> RowToInsert<'a> {
 }
 
 pub struct RowValues {
-    pub fields: Vec<Value>,
+    pub fields: Vec<Rc<Value>>,
 }
 
 impl Deref for RowValues {
-    type Target = Vec<Value>;
+    type Target = Vec<Rc<Value>>;
 
     fn deref(&self) -> &Self::Target {
         &self.fields
@@ -325,17 +325,10 @@ impl Deref for RowValues {
 }
 
 impl RowValues {
-    pub fn new(fields: Vec<Value>) -> RowValues {
+    pub fn new(fields: Vec<Rc<Value>>) -> RowValues {
         RowValues {
             fields
         }
-    }
-
-    fn to_string(&self) -> String {
-        let mut s = String::new();
-        /* self.fields.iter().for_each(|(name, value)| s.push_str(format!("{}: {},", name, value.to_string()).as_str()));
-         s.remove(s.len() - 1);*/
-        s
     }
 }
 
@@ -356,21 +349,25 @@ pub fn new_input_buffer() -> &'static str {
 pub struct TableStructureMetadata {
     pub table_name: String,
     pub row_size: usize,
-    pub fields_metadata: HashMap<String, (u32, FieldMetadata)>,
+    pub fields_meta_map: HashMap<String, (u32, Rc<FieldMetadata>)>,
+    pub fields: Vec<Rc<FieldMetadata>>,
 }
 
 impl TableStructureMetadata {
-    fn new(table_name: &str, fields_metadata: HashMap<String, (u32, FieldMetadata)>) -> TableStructureMetadata {
-        let row_size = fields_metadata.values().map(|(_, m)| m.size).reduce(|a, b| a + b).unwrap();
+    fn new(table_name: &str, fields_metadata: Vec<(String, u32, FieldMetadata)>) -> TableStructureMetadata {
+        let row_size = fields_metadata.iter().map(|(_, _, m)| m.size).reduce(|a, b| a + b).unwrap();
+        let fields_meta_map: HashMap<String, (u32, Rc<FieldMetadata>)> = fields_metadata.into_iter().map(|(name, offset, m)| (name, (offset, Rc::new(m)))).collect();
+        let fields = fields_meta_map.values().map(|(_, m)| Rc::clone(m)).collect();
         TableStructureMetadata {
             table_name: table_name.to_string(),
             row_size,
-            fields_metadata,
+            fields_meta_map,
+            fields
         }
     }
 
     pub fn get_field_metadata(&self, field_name: &str) -> Result<&FieldMetadata, String> {
-        match self.fields_metadata.get(field_name) {
+        match self.fields_meta_map.get(field_name) {
             None => {
                 Err(format!("Field {} does not found in the table {}!", field_name, self.table_name))
             }

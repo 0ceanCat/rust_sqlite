@@ -1,8 +1,10 @@
 use std::cmp::{Ordering, PartialEq, PartialOrd};
 use std::{fs, ptr};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use crate::build_path;
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
 use crate::storage_engine::config::*;
@@ -79,13 +81,15 @@ impl SelectStmt {
         }
     }
 
-    pub(crate) fn execute<'a>(&'a self, table_manager: &'a mut TableManager) -> Result<SelectResult, String> {
+    pub(crate) fn execute<'a>(&'a mut self, table_manager: &'a mut TableManager) -> Result<SelectResult, String> {
         let table = table_manager.get_tables(&self.table)?.iter_mut().next();
         if table.is_none() {
             return Err(format!("Table {} does not exist.", self.table));
         }
 
         let table = table.unwrap();
+
+        // condition match
         let result = match &self.where_expr {
             None => {
                 table.get_all()
@@ -97,40 +101,89 @@ impl SelectStmt {
 
         let table_meta = table_manager.get_table_metadata(&self.table)?;
 
-        let fields_name: Vec<&str> = if self.selected_fields.len() == 1 && self.selected_fields.first().unwrap() == "*" {
-            table_meta.fields_metadata.values().map(|v| v.1.data_def.field_name.as_str()).collect()
+        let selected_fields: Vec<&str> = if self.selected_fields.len() == 1 && self.selected_fields.first().unwrap() == "*" {
+            table_meta.fields.iter().map(|v| v.data_def.field_name.as_str()).collect()
         } else {
             self.selected_fields.iter().map(|x| x.as_str()).collect()
         };
 
-        let human_readable_results = if result.is_empty() {
-            vec![]
-        } else {
-            let mut human_readable_results = Vec::with_capacity(result.len());
-            let max_row_size = table_meta.fields_metadata.values()
-                .map(|x| x.1.size)
-                .max()
-                .unwrap();
+        let order_by_exprs = self.order_by_expr.take()
+            .unwrap_or_else(|| OrderByCluster::new(vec![]))
+            .order_by_exprs;
 
-            let mut row_buf = vec![0; max_row_size];
-            let row_buf_ptr = row_buf.as_mut_ptr();
+        let mut order_by_fields: Vec<&str> = order_by_exprs.iter()
+                                                            .map(|o| o.field.as_str())
+                                                            .collect();
 
-            for row in &result {
-                let mut values = Vec::with_capacity(fields_name.len());
 
-                for field_name in &fields_name {
+        let max_row_size = table_meta.fields.iter()
+                                                .map(|x| x.size)
+                                                .max()
+                                                .unwrap();
+
+        let mut row_buf = vec![0; max_row_size];
+        let row_buf_ptr = row_buf.as_mut_ptr();
+
+        let mut projected_results: Vec<(RowValues, Vec<Rc<Value>>)> = Vec::with_capacity(result.len());
+
+        for row in &result {
+            let mut selected_values: Vec<Rc<Value>> = Vec::with_capacity(selected_fields.len());
+            let mut order_values: Vec<Rc<Value>> = Vec::with_capacity(order_by_fields.len());
+            let mut value_index: Vec<(usize, usize)> = Vec::new();
+
+            for (index, field_name) in selected_fields.iter().enumerate() {
+                let field_meta = table_meta.get_field_metadata(field_name)?;
+                copy_nonoverlapping(row[field_meta.offset..field_meta.offset + field_meta.size].as_ptr(), row_buf_ptr, field_meta.size);
+                let value = Rc::new(Value::from_ptr(&field_meta.data_def.data_type, row_buf[..field_meta.size].as_ptr()));
+
+                let mut i = 0;
+                if order_by_fields.iter().any(|v|{
+                    i += 1;
+                    v == field_name
+                }) {
+                    value_index.push((index, i - 1));
+                }
+                selected_values.push(Rc::clone(&value));
+            }
+
+            value_index.sort_by(|a, b| a.1.cmp(&b.1));
+
+            for (index, field_name) in order_by_fields.iter().enumerate() {
+                let (value_index_in_selected, index_in_order_fields) = value_index.first().unwrap();
+                if *index_in_order_fields == index {
+                    order_values.push(Rc::clone(&selected_values[*value_index_in_selected]));
+                    value_index.remove(0);
+                } else {
                     let field_meta = table_meta.get_field_metadata(field_name)?;
                     copy_nonoverlapping(row[field_meta.offset..field_meta.offset + field_meta.size].as_ptr(), row_buf_ptr, field_meta.size);
-                    let value = Value::from_ptr(&field_meta.data_def.data_type, row_buf[..field_meta.size].as_ptr());
-                    values.push(value);
+                    let value = Rc::new(Value::from_ptr(&field_meta.data_def.data_type, row_buf[..field_meta.size].as_ptr()));
+                    order_values.push(Rc::clone(&value));
+
+                }
+            }
+
+            projected_results.push((RowValues::new(selected_values), order_values));
+        }
+
+        projected_results.sort_by(|(_, order_values1), (_, order_values2)| {
+            let mut index: usize = 0;
+            for expr in &order_by_exprs {
+                let mut ordering = order_values1[index].partial_cmp(&order_values2[index]).unwrap();
+                if expr.order.is_desc() {
+                    ordering = ordering.reverse();
                 }
 
-                human_readable_results.push(RowValues::new(values))
+                if !ordering.is_eq() {
+                    return ordering;
+                }
+                index += 1;
             }
-            human_readable_results
-        };
+            Ordering::Equal
+        });
 
-        Ok(SelectResult::new(fields_name, human_readable_results))
+        let human_readable_results = projected_results.into_iter().map(|(v, _)| v).collect();
+
+        Ok(SelectResult::new(selected_fields, human_readable_results))
     }
 }
 
@@ -433,6 +486,19 @@ impl ConditionExpr {
 pub(crate) enum Order {
     ASC,
     DESC,
+}
+
+impl Order {
+    pub fn is_asc(&self) -> bool {
+        match self {
+            Order::ASC => { true }
+            _ => { false }
+        }
+    }
+
+    pub fn is_desc(&self) -> bool {
+        !self.is_asc()
+    }
 }
 
 impl TryFrom<&str> for Order {

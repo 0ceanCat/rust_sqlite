@@ -123,7 +123,7 @@ impl<'a> SelectStmtParser<'a> {
 
         self.sql_parser.skip_white_spaces();
 
-        let where_stmt: Option<WhereExpr> = if self.sql_parser.is_end() {
+        let where_stmt: Option<WhereExpr> = if self.sql_parser.is_end() || self.sql_parser.starts_with(ORDER_BY){
             None
         } else {
             Some(WhereStmtParser { sql_parser: self.sql_parser }.parse()?)

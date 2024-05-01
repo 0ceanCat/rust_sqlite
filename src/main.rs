@@ -3,6 +3,7 @@ mod sql_engine;
 mod utils;
 
 
+use std::cmp::Ordering;
 use std::io::{Read, Write};
 use crate::sql_engine::sql_parser::SqlParser;
 use crate::sql_engine::sql_structs::SqlStmt;
@@ -19,6 +20,8 @@ fn main() -> Result<(), String> {
         } else if input.starts_with("btree;") {
             table_manager.print_btree(input.split_once(" ").unwrap().1);
             continue;
+        } else if input == "exit;" {
+            break;
         }
 
         let sql = match SqlParser::parse_sql(input) {
@@ -30,7 +33,7 @@ fn main() -> Result<(), String> {
         };
 
         match sql {
-            SqlStmt::SELECT(select) => {
+            SqlStmt::SELECT(mut select) => {
                 let result = select.execute(&mut table_manager)?;
                 result.print();
             }

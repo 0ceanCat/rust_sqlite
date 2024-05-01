@@ -35,9 +35,9 @@ impl AbstractPager {
         self.total_pages > page_num
     }
 
-    fn read_page_from_disk(&self, offset: u64) -> Page {
+    fn read_page_from_disk(&self, page_index: usize) -> Page {
         let mut bytes = [0; PAGE_SIZE];
-        self.fd.seek_read(&mut bytes, offset).unwrap();
+        self.fd.seek_read(&mut bytes, (page_index * PAGE_SIZE + BTREE_METADATA_SIZE) as u64).unwrap();
         bytes
     }
 
@@ -48,7 +48,7 @@ impl AbstractPager {
             return false;
         }
 
-        self.fd.seek(SeekFrom::Start((page_index * PAGE_SIZE) as u64)).unwrap();
+        self.fd.seek(SeekFrom::Start((page_index * PAGE_SIZE + BTREE_METADATA_SIZE) as u64)).unwrap();
         self.fd.write(page.unwrap()).unwrap();
         true
     }
@@ -73,7 +73,7 @@ impl Pager for AbstractPager {
         if page.is_none() {
             let loaded_page;
             if self.page_in_disk(page_index) {
-                loaded_page = self.read_page_from_disk((page_index * PAGE_SIZE) as u64);
+                loaded_page = self.read_page_from_disk(page_index);
             } else {
                 let new_page: Page = [0; PAGE_SIZE];
                 loaded_page = new_page;
