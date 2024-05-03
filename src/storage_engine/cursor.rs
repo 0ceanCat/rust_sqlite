@@ -1,6 +1,5 @@
 use std::ops::{Deref, DerefMut};
 use crate::storage_engine::tables::{Table};
-use crate::storage_engine::common::{RowBytes};
 
 pub struct Cursor {
     pub page_index: usize,

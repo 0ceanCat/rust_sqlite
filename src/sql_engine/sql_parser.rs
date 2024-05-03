@@ -123,7 +123,7 @@ impl<'a> SelectStmtParser<'a> {
 
         self.sql_parser.skip_white_spaces();
 
-        let where_stmt: Option<WhereExpr> = if self.sql_parser.is_end() {
+        let where_stmt: Option<WhereExpr> = if self.sql_parser.is_end() || self.sql_parser.starts_with(ORDER_BY){
             None
         } else {
             Some(WhereStmtParser { sql_parser: self.sql_parser }.parse()?)
@@ -183,7 +183,7 @@ impl<'a> WhereStmtParser<'a> {
         self.sql_parser.skip_white_spaces();
 
         let mut condition_exprs = Vec::<(LogicalOperator, ConditionCluster)>::new();
-        let mut logical_op = Some(LogicalOperator::OR);
+        let mut logical_op = Some(LogicalOperator::AND);
 
         while !self.sql_parser.is_end() {
             let condition_expr = self.parse_condition_cluster()?;
@@ -269,6 +269,10 @@ impl<'a> InsertStmtParser<'a> {
         let fields = self.parse_inserted_fields()?;
 
         let values = self.parse_values()?;
+
+        if !self.sql_parser.is_end() && self.sql_parser.current_char() != ';'{
+            return Err(format!("Syntax error, `;` expected but `{}` was found.", self.sql_parser.current_char()));
+        }
 
         if fields.first().unwrap() != "*" && values.len() != fields.len() {
             return Err(String::from("Number of inserted rows and row values are not the same."));
@@ -430,7 +434,7 @@ impl<'a> OrderByExprParser<'a> {
             check_valid_field_name(&field)?;
             check_key_word(&field)?;
             self.sql_parser.skip_white_spaces();
-            let mut order: Order;
+            let order: Order;
             if self.sql_parser.is_end() || self.sql_parser.current_char() == ',' {
                 order = Order::ASC;
             } else {

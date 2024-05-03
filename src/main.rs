@@ -2,8 +2,6 @@ mod storage_engine;
 mod sql_engine;
 mod utils;
 
-
-use std::io::{Read, Write};
 use crate::sql_engine::sql_parser::SqlParser;
 use crate::sql_engine::sql_structs::SqlStmt;
 use crate::storage_engine::common::*;
@@ -19,6 +17,8 @@ fn main() -> Result<(), String> {
         } else if input.starts_with("btree;") {
             table_manager.print_btree(input.split_once(" ").unwrap().1);
             continue;
+        } else if input == "exit;" {
+            break;
         }
 
         let sql = match SqlParser::parse_sql(input) {
@@ -30,13 +30,11 @@ fn main() -> Result<(), String> {
         };
 
         match sql {
-            SqlStmt::SELECT(select) => {
-                let result = select.execute()?;
-                for row in result {
-                    //println!("[id:{}, username:{}, email:{}]", row.id, String::from_utf8_lossy(row.username.as_slice()), String::from_utf8_lossy(row.email.as_slice()));
-                }
+            SqlStmt::SELECT(mut select) => {
+                let result = select.execute(&mut table_manager)?;
+                result.print();
             }
-            SqlStmt::INSERT(insert) => {
+            SqlStmt::INSERT(mut insert) => {
                 println!("{:?}", match insert.execute(&mut table_manager) {
                     Ok(_) => {
                         String::from("Data inserted.")
