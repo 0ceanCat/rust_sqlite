@@ -1,10 +1,10 @@
-mod storage_engine;
-mod sql_engine;
-mod utils;
-
 use crate::sql_engine::sql_parser::SqlParser;
 use crate::sql_engine::sql_structs::SqlStmt;
 use crate::storage_engine::common::*;
+
+mod sql_engine;
+mod storage_engine;
+mod utils;
 
 fn main() -> Result<(), String> {
     let mut table_manager = TableManager::new();
@@ -22,7 +22,7 @@ fn main() -> Result<(), String> {
         }
 
         let sql = match SqlParser::parse_sql(input) {
-            Ok(sql) => {sql}
+            Ok(sql) => sql,
             Err(e) => {
                 println!("{}", e);
                 continue;
@@ -35,20 +35,30 @@ fn main() -> Result<(), String> {
                 result.print();
             }
             SqlStmt::INSERT(mut insert) => {
-                println!("{:?}", match insert.execute(&mut table_manager) {
-                    Ok(_) => {
-                        String::from("Data inserted.")
+                println!(
+                    "{:?}",
+                    match insert.execute(&mut table_manager) {
+                        Ok(_) => {
+                            String::from("Data inserted.")
+                        }
+                        Err(e) => {
+                            e
+                        }
                     }
-                    Err(e) => {e}
-                });
+                );
             }
             SqlStmt::CREATE(create) => {
-                println!("{:?}", match create.execute(&mut table_manager) {
-                    Ok(_) => {
-                        String::from("Table created.")
+                println!(
+                    "{:?}",
+                    match create.execute(&mut table_manager) {
+                        Ok(_) => {
+                            String::from("Table created.")
+                        }
+                        Err(e) => {
+                            e
+                        }
                     }
-                    Err(e) => {e}
-                });
+                );
             }
         }
     }

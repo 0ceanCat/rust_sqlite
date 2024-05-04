@@ -1,17 +1,19 @@
 extern crate core;
 
-use std::io::{Write};
 use std::{fs, ptr};
 use std::collections::HashMap;
+use std::io::Write;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
 use prettytable::Row;
+
 use crate::build_path;
 use crate::sql_engine::sql_structs::{DataType, FieldDefinition, Value};
-use crate::utils::utils::{copy, copy_nonoverlapping, list_files_of_folder, u8_array_to_string};
 use crate::storage_engine::config::*;
 use crate::storage_engine::tables::{BtreeTable, SequentialTable, Table};
+use crate::utils::utils::{copy, copy_nonoverlapping, list_files_of_folder, u8_array_to_string};
 
 pub struct TableManager {
     tables: HashMap<String, (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>)>,
@@ -24,7 +26,11 @@ impl TableManager {
         }
     }
 
-    pub fn register_new_table(&mut self, table_name: &str, storage_file: &PathBuf) -> Result<(), String> {
+    pub fn register_new_table(
+        &mut self,
+        table_name: &str,
+        storage_file: &PathBuf,
+    ) -> Result<(), String> {
         if !self.tables.contains_key(table_name) {
             self.load_tables(table_name)
         } else {
@@ -39,7 +45,8 @@ impl TableManager {
             self.load_tables(table_name).unwrap();
         }
 
-        let result: &mut (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) = self.tables.get_mut(table_name).unwrap();
+        let result: &mut (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) =
+            self.tables.get_mut(table_name).unwrap();
         Ok(&mut result.1)
     }
 
@@ -50,7 +57,9 @@ impl TableManager {
 
         for (file_name, path) in storage_files {
             let file_name = file_name.into_string().unwrap();
-            if file_name.ends_with(".frm") { continue; }
+            if file_name.ends_with(".frm") {
+                continue;
+            }
             let index = file_name.ends_with(".idx");
             let table: Box<dyn Table> = if index {
                 Box::new(BtreeTable::new(&path, Rc::clone(&table_meta))?)
@@ -59,20 +68,33 @@ impl TableManager {
             };
             tables.push(table);
         }
-        self.tables.insert(table_name.to_string(), (table_meta, tables));
+        self.tables
+            .insert(table_name.to_string(), (table_meta, tables));
         Ok(())
     }
 
-    fn load_table(storage_file_name: &PathBuf, table_meta: Rc<TableStructureMetadata>) -> Result<Box<dyn Table>, String> {
+    fn load_table(
+        storage_file_name: &PathBuf,
+        table_meta: Rc<TableStructureMetadata>,
+    ) -> Result<Box<dyn Table>, String> {
         let is_index = storage_file_name.ends_with(".idx");
         if is_index {
-            Ok(Box::new(BtreeTable::new(storage_file_name, Rc::clone(&table_meta))?))
+            Ok(Box::new(BtreeTable::new(
+                storage_file_name,
+                Rc::clone(&table_meta),
+            )?))
         } else {
-            Ok(Box::new(SequentialTable::new(storage_file_name, Rc::clone(&table_meta))?))
+            Ok(Box::new(SequentialTable::new(
+                storage_file_name,
+                Rc::clone(&table_meta),
+            )?))
         }
     }
 
-    pub fn get_table_metadata(&mut self, table_name: &str) -> Result<&TableStructureMetadata, String> {
+    pub fn get_table_metadata(
+        &mut self,
+        table_name: &str,
+    ) -> Result<&TableStructureMetadata, String> {
         if self.tables.is_empty() {
             self.load_tables(table_name)?;
         }
@@ -80,9 +102,7 @@ impl TableManager {
             None => {
                 return Err(format!("Table {} is not exist.", table_name));
             }
-            Some(rc) => {
-                Ok(&*(rc.0))
-            }
+            Some(rc) => Ok(&*(rc.0)),
         }
     }
 
@@ -103,13 +123,19 @@ impl TableManager {
         println!("{}", table_name)
     }
 
-    unsafe fn load_metadata_from_disk(path: &Path) -> Result<Vec<(String, u32, Rc<FieldMetadata>)>, String> {
+    unsafe fn load_metadata_from_disk(
+        path: &Path,
+    ) -> Result<Vec<(String, u32, Rc<FieldMetadata>)>, String> {
         let metadata = fs::read(path).unwrap();
         let mut metadata_pointer = 0; // pointer that points to the position where we should start reading
 
         let ptr = metadata.as_ptr();
         let fields_number: usize = 0;
-        copy_nonoverlapping(ptr, &fields_number as *const usize as *mut u8, FIELD_NUMBER_SIZE);
+        copy_nonoverlapping(
+            ptr,
+            &fields_number as *const usize as *mut u8,
+            FIELD_NUMBER_SIZE,
+        );
         metadata_pointer += FIELD_NUMBER_SIZE;
         let mut fields: Vec<(String, u32, Rc<FieldMetadata>)> = Vec::with_capacity(fields_number);
 
@@ -123,7 +149,11 @@ impl TableManager {
             metadata_pointer += FIELD_NAME_SIZE;
 
             let field_type_primary: u8 = 0;
-            copy_nonoverlapping(ptr.add(metadata_pointer), &field_type_primary as *const u8 as *mut u8, FIELD_TYPE_PRIMARY_SIZE);
+            copy_nonoverlapping(
+                ptr.add(metadata_pointer),
+                &field_type_primary as *const u8 as *mut u8,
+                FIELD_TYPE_PRIMARY_SIZE,
+            );
             metadata_pointer += FIELD_TYPE_PRIMARY_SIZE;
 
             let data_type_bit_code = (field_type_primary >> 1) | data_type_mask;
@@ -131,7 +161,11 @@ impl TableManager {
 
             let data_type = match DataType::from_bit_code(data_type_bit_code)? {
                 DataType::TEXT(_) => {
-                    copy(ptr.add(metadata_pointer), &size as *const usize as *mut u8, TEXT_CHARS_NUM_SIZE);
+                    copy(
+                        ptr.add(metadata_pointer),
+                        &size as *const usize as *mut u8,
+                        TEXT_CHARS_NUM_SIZE,
+                    );
                     metadata_pointer += TEXT_CHARS_NUM_SIZE;
                     DataType::TEXT(size)
                 }
@@ -153,7 +187,11 @@ impl TableManager {
 
             let definition = FieldDefinition::new(u8_array_to_string(&buf), data_type, is_primary);
 
-            fields.push((u8_array_to_string(&buf), i as u32, Rc::new(FieldMetadata::new(definition, value_offset, size))));
+            fields.push((
+                u8_array_to_string(&buf),
+                i as u32,
+                Rc::new(FieldMetadata::new(definition, value_offset, size)),
+            ));
 
             value_offset += size;
         }
@@ -163,7 +201,6 @@ impl TableManager {
 }
 
 pub(crate) type Page = [u8; PAGE_SIZE];
-
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct RowBytes {
@@ -181,28 +218,18 @@ impl Deref for RowBytes {
 impl RowBytes {
     pub(crate) fn serialize_row(&self, destination: *mut u8) {
         unsafe {
-            ptr::copy_nonoverlapping(
-                self.as_ptr(),
-                destination,
-                self.len(),
-            );
+            ptr::copy_nonoverlapping(self.as_ptr(), destination, self.len());
         }
     }
 
     pub(crate) fn deserialize_row(source: *const u8, row_size: usize) -> RowBytes {
         let mut data = Vec::<u8>::with_capacity(row_size);
         unsafe {
-            ptr::copy_nonoverlapping(
-                source,
-                data.as_mut_ptr(),
-                row_size,
-            );
+            ptr::copy_nonoverlapping(source, data.as_mut_ptr(), row_size);
             data.set_len(row_size);
         }
 
-        RowBytes {
-            data
-        }
+        RowBytes { data }
     }
 
     pub fn read_key(&self, key_type: &DataType, key_offset: usize, key_size: usize) -> Value {
@@ -217,19 +244,26 @@ pub struct SelectResult<'a> {
 
 impl<'a> SelectResult<'a> {
     pub fn new(fields: Vec<&'a str>, rows: Vec<RowValues>) -> SelectResult {
-        SelectResult {
-            fields,
-            rows,
-        }
+        SelectResult { fields, rows }
     }
 
     pub(crate) fn print(&self) {
         let mut table = prettytable::Table::new();
 
-        table.add_row(Row::new(self.fields.iter().map(|f| prettytable::Cell::new(f)).collect()));
+        table.add_row(Row::new(
+            self.fields
+                .iter()
+                .map(|f| prettytable::Cell::new(f))
+                .collect(),
+        ));
 
         self.rows.iter().for_each(|r| {
-            table.add_row(Row::new(r.fields.iter().map(|f| prettytable::Cell::new(f.to_string().as_str())).collect()));
+            table.add_row(Row::new(
+                r.fields
+                    .iter()
+                    .map(|f| prettytable::Cell::new(f.to_string().as_str()))
+                    .collect(),
+            ));
         });
 
         table.printstd();
@@ -242,7 +276,11 @@ pub struct RowToInsert<'a> {
 }
 
 impl<'a> RowToInsert<'a> {
-    pub fn new(fields: &'a Vec<String>, values: &'a Vec<Value>, table_meta: &TableStructureMetadata) -> RowToInsert<'a> {
+    pub fn new(
+        fields: &'a Vec<String>,
+        values: &'a Vec<Value>,
+        table_meta: &TableStructureMetadata,
+    ) -> RowToInsert<'a> {
         let field_value_pairs: Vec<(&String, &Value)> = fields.iter().zip(values.iter()).collect();
 
         let bytes = Self::to_bytes(&field_value_pairs, table_meta);
@@ -252,7 +290,10 @@ impl<'a> RowToInsert<'a> {
         }
     }
 
-    pub fn to_bytes(field_value_pair: &Vec<(&'a String, &'a Value)>, table_meta: &TableStructureMetadata) -> RowBytes {
+    pub fn to_bytes(
+        field_value_pair: &Vec<(&'a String, &'a Value)>,
+        table_meta: &TableStructureMetadata,
+    ) -> RowBytes {
         let mut data = vec![0; table_meta.row_size];
         let buf = data.as_mut_ptr();
 
@@ -260,19 +301,37 @@ impl<'a> RowToInsert<'a> {
             for (name, value) in field_value_pair {
                 let field_meta = table_meta.get_field_metadata(name).unwrap();
                 match value {
-                    Value::INTEGER(i) => { copy_nonoverlapping(i as *const i32 as *const u8, buf.add(field_meta.offset), field_meta.size); }
-                    Value::FLOAT(f) => { copy_nonoverlapping(f as *const f32 as *const u8, buf.add(field_meta.offset), field_meta.size); }
-                    Value::BOOLEAN(b) => { copy_nonoverlapping(b as *const bool as *const u8, buf.add(field_meta.offset), field_meta.size); }
-                    Value::STRING(s) => { copy_nonoverlapping(s.as_ptr(), buf.add(field_meta.offset), s.len()); }
+                    Value::INTEGER(i) => {
+                        copy_nonoverlapping(
+                            i as *const i32 as *const u8,
+                            buf.add(field_meta.offset),
+                            field_meta.size,
+                        );
+                    }
+                    Value::FLOAT(f) => {
+                        copy_nonoverlapping(
+                            f as *const f32 as *const u8,
+                            buf.add(field_meta.offset),
+                            field_meta.size,
+                        );
+                    }
+                    Value::BOOLEAN(b) => {
+                        copy_nonoverlapping(
+                            b as *const bool as *const u8,
+                            buf.add(field_meta.offset),
+                            field_meta.size,
+                        );
+                    }
+                    Value::STRING(s) => {
+                        copy_nonoverlapping(s.as_ptr(), buf.add(field_meta.offset), s.len());
+                    }
                     Value::ARRAY(_) => {}
                     Value::SelectStmt(_) => {}
                 }
             }
         }
 
-        RowBytes {
-            data
-        }
+        RowBytes { data }
     }
 }
 
@@ -290,9 +349,7 @@ impl Deref for RowValues {
 
 impl RowValues {
     pub fn new(fields: Vec<Rc<Value>>) -> RowValues {
-        RowValues {
-            fields
-        }
+        RowValues { fields }
     }
 }
 
@@ -318,33 +375,40 @@ pub struct TableStructureMetadata {
 }
 
 impl TableStructureMetadata {
-    fn new(table_name: &str, fields_metadata: Vec<(String, u32, Rc<FieldMetadata>)>) -> TableStructureMetadata {
-        let row_size = fields_metadata.iter()
-                                            .map(|(_, _, m)| m.size)
-                                            .reduce(|a, b| a + b)
-                                            .unwrap();
+    fn new(
+        table_name: &str,
+        fields_metadata: Vec<(String, u32, Rc<FieldMetadata>)>,
+    ) -> TableStructureMetadata {
+        let row_size = fields_metadata
+            .iter()
+            .map(|(_, _, m)| m.size)
+            .reduce(|a, b| a + b)
+            .unwrap();
 
-        let fields = fields_metadata.iter()
-                                                            .map(|(_, _, m)| Rc::clone(m))
-                                                            .collect();
+        let fields = fields_metadata
+            .iter()
+            .map(|(_, _, m)| Rc::clone(m))
+            .collect();
 
-        let fields_meta_map: HashMap<String, (u32, Rc<FieldMetadata>)> = fields_metadata.into_iter()
-                                                                                        .map(|(name, offset, m)| (name, (offset, Rc::clone(&m))))
-                                                                                        .collect();
+        let fields_meta_map: HashMap<String, (u32, Rc<FieldMetadata>)> = fields_metadata
+            .into_iter()
+            .map(|(name, offset, m)| (name, (offset, Rc::clone(&m))))
+            .collect();
         TableStructureMetadata {
             table_name: table_name.to_string(),
             row_size,
             fields_meta_map,
-            fields
+            fields,
         }
     }
 
     pub fn get_field_metadata(&self, field_name: &str) -> Result<&FieldMetadata, String> {
         match self.fields_meta_map.get(field_name) {
-            None => {
-                Err(format!("Field {} does not found in the table {}!", field_name, self.table_name))
-            }
-            Some((_, fm)) => { Ok(fm) }
+            None => Err(format!(
+                "Field {} does not found in the table {}!",
+                field_name, self.table_name
+            )),
+            Some((_, fm)) => Ok(fm),
         }
     }
 }

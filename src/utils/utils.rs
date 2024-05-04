@@ -1,17 +1,15 @@
-use std::path::{Path, PathBuf};
 use std::{fs, ptr};
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 #[macro_export]
 macro_rules! to_u8_array {
-    ($s:ident, $size: expr) => {
-        {
-           let mut array: [u8; $size] = [0; $size];
-            let bytes = $s.as_bytes();
-            array[..bytes.len()].copy_from_slice(bytes);
-            array
-        }
-    };
+    ($s:ident, $size: expr) => {{
+        let mut array: [u8; $size] = [0; $size];
+        let bytes = $s.as_bytes();
+        array[..bytes.len()].copy_from_slice(bytes);
+        array
+    }};
 }
 
 #[macro_export]
@@ -33,7 +31,11 @@ pub trait ToU8 {
 
 impl ToU8 for bool {
     fn to_u8(&self) -> u8 {
-        if *self { 1 } else { 0 }
+        if *self {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -50,11 +52,10 @@ pub(crate) fn copy<T>(src: *const T, dst: *mut T, count: usize) {
 }
 
 pub(crate) fn indent(level: usize) {
-  for _ in 0..level {
-      print!(" ")
-  }
+    for _ in 0..level {
+        print!(" ")
+    }
 }
-
 
 pub(crate) fn is_folder_empty(folder_path: &Path) -> bool {
     match fs::read_dir(folder_path) {
@@ -66,9 +67,7 @@ pub(crate) fn is_folder_empty(folder_path: &Path) -> bool {
             }
             true
         }
-        Err(_) => {
-            true
-        }
+        Err(_) => true,
     }
 }
 
@@ -84,20 +83,25 @@ pub(crate) fn u8_array_to_string(array: &[u8]) -> String {
     String::from_utf8_lossy(&array[..end]).to_string()
 }
 
-pub(crate) fn list_files_of_folder(folder_path: &PathBuf) -> Result<Vec<(OsString, PathBuf)>, String> {
+pub(crate) fn list_files_of_folder(
+    folder_path: &PathBuf,
+) -> Result<Vec<(OsString, PathBuf)>, String> {
     match fs::read_dir(folder_path) {
         Ok(entries) => {
             let mut files: Vec<(OsString, PathBuf)> = vec![];
             for entry in entries {
                 if let Ok(dirEntry) = entry {
-                   files.push((dirEntry.file_name(), dirEntry.path()));
+                    files.push((dirEntry.file_name(), dirEntry.path()));
                 }
             }
 
             Ok(files)
         }
         Err(_) => {
-            return Err(format!("Can not open directory {}", folder_path.to_str().unwrap()))
+            return Err(format!(
+                "Can not open directory {}",
+                folder_path.to_str().unwrap()
+            ))
         }
     }
 }

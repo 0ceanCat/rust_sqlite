@@ -1,5 +1,6 @@
 use std::ops::{Deref, DerefMut};
-use crate::storage_engine::tables::{Table};
+
+use crate::storage_engine::tables::Table;
 
 pub struct Cursor {
     pub page_index: usize,
@@ -39,7 +40,11 @@ impl<'a> DerefMut for WriteReadCursor<'a> {
 }
 
 impl<'a> WriteReadCursor<'a> {
-    pub(crate) fn at(table: &mut dyn Table, page_index: usize, cell_index: usize) -> WriteReadCursor {
+    pub(crate) fn at(
+        table: &mut dyn Table,
+        page_index: usize,
+        cell_index: usize,
+    ) -> WriteReadCursor {
         let num_cells = table.get_num_cells(page_index);
         let row_size = table.get_row_size();
         WriteReadCursor {
@@ -49,7 +54,8 @@ impl<'a> WriteReadCursor<'a> {
     }
 
     pub(crate) fn cursor_value(&mut self) -> *mut u8 {
-        self.table.get_row_value_mut(self.page_index, self.cell_index)
+        self.table
+            .get_row_value_mut(self.page_index, self.cell_index)
     }
 
     pub(crate) fn cursor_advance(&mut self) {

@@ -1,15 +1,18 @@
-use std::cmp::{Ordering, PartialEq, PartialOrd};
 use std::{fs, ptr};
-use std::fs::{File, OpenOptions};
+use std::cmp::{Ordering, PartialEq, PartialOrd};
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
 use crate::build_path;
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
+use crate::storage_engine::common::{
+    RowBytes, RowToInsert, RowValues, SelectResult, TableManager, TableStructureMetadata,
+};
 use crate::storage_engine::config::*;
-use crate::storage_engine::common::{RowValues, RowBytes, RowToInsert, SelectResult, TableManager, TableStructureMetadata};
-use crate::storage_engine::tables::{Table};
-use crate::utils::utils::{copy_nonoverlapping, is_folder_empty, ToU8, u8_array_to_string};
+use crate::storage_engine::tables::Table;
+use crate::utils::utils::{copy_nonoverlapping, ToU8, u8_array_to_string};
 
 pub(crate) enum SqlStmt {
     SELECT(SelectStmt),
@@ -26,7 +29,12 @@ pub(crate) struct SelectStmt {
 }
 
 impl SelectStmt {
-    pub(crate) fn new(selected_fields: Vec<String>, table: String, where_stmt: Option<WhereExpr>, order_by_stmt: Option<OrderByCluster>) -> SelectStmt {
+    pub(crate) fn new(
+        selected_fields: Vec<String>,
+        table: String,
+        where_stmt: Option<WhereExpr>,
+        order_by_stmt: Option<OrderByCluster>,
+    ) -> SelectStmt {
         SelectStmt {
             selected_fields,
             table,
@@ -35,7 +43,10 @@ impl SelectStmt {
         }
     }
 
-    pub(crate) fn execute<'a>(&'a mut self, table_manager: &'a mut TableManager) -> Result<SelectResult, String> {
+    pub(crate) fn execute<'a>(
+        &'a mut self,
+        table_manager: &'a mut TableManager,
+    ) -> Result<SelectResult, String> {
         let table = table_manager.get_tables(&self.table)?.iter_mut().next();
         if table.is_none() {
             return Err(format!("Table {} does not exist.", self.table));
@@ -47,37 +58,47 @@ impl SelectStmt {
 
         let table_meta = table_manager.get_table_metadata(&self.table)?;
 
-        let selected_fields: Vec<&str> = if self.selected_fields.len() == 1 && self.selected_fields.first().unwrap() == "*" {
-            table_meta.fields.iter().map(|v| v.data_def.field_name.as_str()).collect()
-        } else {
-            self.selected_fields.iter().map(|x| x.as_str()).collect()
-        };
+        let selected_fields: Vec<&str> =
+            if self.selected_fields.len() == 1 && self.selected_fields.first().unwrap() == "*" {
+                table_meta
+                    .fields
+                    .iter()
+                    .map(|v| v.data_def.field_name.as_str())
+                    .collect()
+            } else {
+                self.selected_fields.iter().map(|x| x.as_str()).collect()
+            };
 
-        let order_by_exprs = self.order_by_expr.take()
-                                                                .unwrap_or_else(|| OrderByCluster::new(vec![]))
-                                                                .order_by_exprs;
+        let order_by_exprs = self
+            .order_by_expr
+            .take()
+            .unwrap_or_else(|| OrderByCluster::new(vec![]))
+            .order_by_exprs;
 
-        let projected_results = self.order_by(order_by_exprs, &result, table_meta, &selected_fields)?;
+        let projected_results =
+            self.order_by(order_by_exprs, &result, table_meta, &selected_fields)?;
 
         let human_readable_results = projected_results.into_iter().map(|(v, _)| v).collect();
 
         Ok(SelectResult::new(selected_fields, human_readable_results))
     }
 
-    fn order_by(&self, order_by_exprs: Vec<OrderByExpr>, result: &Vec<RowBytes>, table_meta: &TableStructureMetadata, selected_fields: &Vec<&str>) -> Result<Vec<(RowValues, Vec<Rc<Value>>)>, String> {
-        let order_by_fields: Vec<&str> = order_by_exprs.iter()
-            .map(|o| o.field.as_str())
-            .collect();
+    fn order_by(
+        &self,
+        order_by_exprs: Vec<OrderByExpr>,
+        result: &Vec<RowBytes>,
+        table_meta: &TableStructureMetadata,
+        selected_fields: &Vec<&str>,
+    ) -> Result<Vec<(RowValues, Vec<Rc<Value>>)>, String> {
+        let order_by_fields: Vec<&str> = order_by_exprs.iter().map(|o| o.field.as_str()).collect();
 
-        let max_row_size = table_meta.fields.iter()
-            .map(|x| x.size)
-            .max()
-            .unwrap();
+        let max_row_size = table_meta.fields.iter().map(|x| x.size).max().unwrap();
 
         let mut row_buf = vec![0; max_row_size];
         let row_buf_ptr = row_buf.as_mut_ptr();
 
-        let mut projected_results: Vec<(RowValues, Vec<Rc<Value>>)> = Vec::with_capacity(result.len());
+        let mut projected_results: Vec<(RowValues, Vec<Rc<Value>>)> =
+            Vec::with_capacity(result.len());
 
         for row in result {
             let mut selected_values: Vec<Rc<Value>> = Vec::with_capacity(selected_fields.len());
@@ -86,8 +107,15 @@ impl SelectStmt {
 
             for (index, field_name) in selected_fields.iter().enumerate() {
                 let field_meta = table_meta.get_field_metadata(field_name)?;
-                copy_nonoverlapping(row[field_meta.offset..field_meta.offset + field_meta.size].as_ptr(), row_buf_ptr, field_meta.size);
-                let value = Rc::new(Value::from_ptr(&field_meta.data_def.data_type, row_buf[..field_meta.size].as_ptr()));
+                copy_nonoverlapping(
+                    row[field_meta.offset..field_meta.offset + field_meta.size].as_ptr(),
+                    row_buf_ptr,
+                    field_meta.size,
+                );
+                let value = Rc::new(Value::from_ptr(
+                    &field_meta.data_def.data_type,
+                    row_buf[..field_meta.size].as_ptr(),
+                ));
 
                 let mut i = 0;
                 if order_by_fields.iter().any(|v| {
@@ -108,8 +136,15 @@ impl SelectStmt {
                     value_index.remove(0);
                 } else {
                     let field_meta = table_meta.get_field_metadata(field_name)?;
-                    copy_nonoverlapping(row[field_meta.offset..field_meta.offset + field_meta.size].as_ptr(), row_buf_ptr, field_meta.size);
-                    let value = Rc::new(Value::from_ptr(&field_meta.data_def.data_type, row_buf[..field_meta.size].as_ptr()));
+                    copy_nonoverlapping(
+                        row[field_meta.offset..field_meta.offset + field_meta.size].as_ptr(),
+                        row_buf_ptr,
+                        field_meta.size,
+                    );
+                    let value = Rc::new(Value::from_ptr(
+                        &field_meta.data_def.data_type,
+                        row_buf[..field_meta.size].as_ptr(),
+                    ));
                     order_values.push(Rc::clone(&value));
                 }
             }
@@ -120,7 +155,9 @@ impl SelectStmt {
         projected_results.sort_by(|(_, order_values1), (_, order_values2)| {
             let mut index: usize = 0;
             for expr in &order_by_exprs {
-                let mut ordering = order_values1[index].partial_cmp(&order_values2[index]).unwrap();
+                let mut ordering = order_values1[index]
+                    .partial_cmp(&order_values2[index])
+                    .unwrap();
                 if expr.order.is_desc() {
                     ordering = ordering.reverse();
                 }
@@ -138,16 +175,11 @@ impl SelectStmt {
 
     fn execute_where(&mut self, table: &mut Box<dyn Table>) -> Vec<RowBytes> {
         match &self.where_expr {
-            None => {
-                table.get_all()
-            }
-            Some(w) => {
-                w.execute(table)
-            }
+            None => table.get_all(),
+            Some(w) => w.execute(table),
         }
     }
 }
-
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct InsertStmt {
@@ -168,17 +200,33 @@ impl InsertStmt {
     pub fn execute(&mut self, table_manager: &mut TableManager) -> Result<(), String> {
         let meta = table_manager.get_table_metadata(&self.table)?;
         if self.fields.len() == 1 && self.fields.first().unwrap() == "*" {
-            self.fields = meta.fields.iter().map(|f| f.data_def.field_name.to_string()).collect();
+            self.fields = meta
+                .fields
+                .iter()
+                .map(|f| f.data_def.field_name.to_string())
+                .collect();
         } else {
-            match self.fields.iter().filter(|f| meta.get_field_metadata(f).is_err()).next() {
+            match self
+                .fields
+                .iter()
+                .filter(|f| meta.get_field_metadata(f).is_err())
+                .next()
+            {
                 None => {}
                 Some(field) => {
-                    return Err(format!("Field `{}` not found in table `{}`.", field, self.table));
+                    return Err(format!(
+                        "Field `{}` not found in table `{}`.",
+                        field, self.table
+                    ));
                 }
             };
         }
 
-        let row = RowToInsert::new(&self.fields, &self.values, table_manager.get_table_metadata(&self.table)?);
+        let row = RowToInsert::new(
+            &self.fields,
+            &self.values,
+            table_manager.get_table_metadata(&self.table)?,
+        );
         let tables = table_manager.get_tables(&self.table)?;
 
         for table in tables.iter_mut() {
@@ -196,7 +244,7 @@ pub(crate) struct WhereExpr {
 impl WhereExpr {
     pub(crate) fn new(condition_exprs: Vec<(LogicalOperator, ConditionCluster)>) -> WhereExpr {
         WhereExpr {
-            condition_cluster: condition_exprs
+            condition_cluster: condition_exprs,
         }
     }
 
@@ -213,10 +261,7 @@ pub(crate) struct CreateStmt {
 
 impl CreateStmt {
     pub(crate) fn new(table: String, definitions: Vec<FieldDefinition>) -> CreateStmt {
-        CreateStmt {
-            table,
-            definitions,
-        }
+        CreateStmt { table, definitions }
     }
 
     pub fn execute(&self, table_manager: &mut TableManager) -> Result<(), String> {
@@ -229,17 +274,21 @@ impl CreateStmt {
             let dir = build_path!(DATA_FOLDER, table_name);
             match fs::create_dir_all(dir) {
                 Ok(_) => {}
-                Err(_) => { return Err(String::from("Can not create dir.")); }
+                Err(_) => {
+                    return Err(String::from("Can not create dir."));
+                }
             };
         }
 
-        let row_size = self.definitions.iter().map(|d| d.data_type.get_size()).sum();
+        let row_size = self
+            .definitions
+            .iter()
+            .map(|d| d.data_type.get_size())
+            .sum();
 
         unsafe {
             match File::create(frm_path) {
-                Ok(file) => {
-                    self.write_structure_metadata(file)?
-                }
+                Ok(file) => self.write_structure_metadata(file)?,
                 Err(_) => {
                     return Err(String::from("Can not create table."));
                 }
@@ -248,13 +297,15 @@ impl CreateStmt {
             let primary_key = self.definitions.iter().filter(|d| d.is_primary_key).next();
             match primary_key {
                 None => {
-                    let sequential_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".seq");
+                    let sequential_path =
+                        build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".seq");
                     let sequential_file = File::create(&sequential_path).unwrap();
                     self.write_seq_metadata(sequential_file, row_size)?;
                     table_manager.register_new_table(&self.table, &sequential_path)
                 }
                 Some(f) => {
-                    let primary_path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".idx");
+                    let primary_path =
+                        build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".idx");
                     let primary_file = File::create(&primary_path).unwrap();
                     self.write_index_metadata(primary_file, f)?;
                     table_manager.register_new_table(&self.table, &primary_path)
@@ -269,25 +320,46 @@ impl CreateStmt {
         total_size += self.definitions.len() * FIELD_NAME_SIZE;
         total_size += self.definitions.len() * FIELD_TYPE_PRIMARY_SIZE;
 
-        let text_fields = self.definitions.iter().filter(|d| d.data_type.is_text()).count();
+        let text_fields = self
+            .definitions
+            .iter()
+            .filter(|d| d.data_type.is_text())
+            .count();
         total_size += text_fields * TEXT_CHARS_NUM_SIZE;
 
         let mut vec = vec![0; total_size];
         let buf = vec.as_mut_ptr();
         let mut buf_pointer = 0; // pointer that points to the position where we should start reading
 
-        ptr::copy_nonoverlapping(&self.definitions.len() as *const usize as *const u8, buf, FIELD_NUMBER_SIZE);
+        ptr::copy_nonoverlapping(
+            &self.definitions.len() as *const usize as *const u8,
+            buf,
+            FIELD_NUMBER_SIZE,
+        );
         buf_pointer += FIELD_NUMBER_SIZE;
 
         self.definitions.iter().for_each(|field_definition| {
-            ptr::copy_nonoverlapping(field_definition.field_name.as_ptr(), buf.add(buf_pointer), field_definition.field_name.len());
+            ptr::copy_nonoverlapping(
+                field_definition.field_name.as_ptr(),
+                buf.add(buf_pointer),
+                field_definition.field_name.len(),
+            );
             buf_pointer += FIELD_NAME_SIZE;
-            let data_type_primary: u8 = (field_definition.data_type.to_bit_code() << 1) | field_definition.is_primary_key.to_u8();
-            ptr::copy_nonoverlapping(&data_type_primary as *const u8, buf.add(buf_pointer), FIELD_TYPE_PRIMARY_SIZE);
+            let data_type_primary: u8 = (field_definition.data_type.to_bit_code() << 1)
+                | field_definition.is_primary_key.to_u8();
+            ptr::copy_nonoverlapping(
+                &data_type_primary as *const u8,
+                buf.add(buf_pointer),
+                FIELD_TYPE_PRIMARY_SIZE,
+            );
             buf_pointer += FIELD_TYPE_PRIMARY_SIZE;
             match field_definition.data_type {
                 DataType::TEXT(size) => {
-                    ptr::copy_nonoverlapping(&size as *const usize as *const u8, buf.add(buf_pointer), TEXT_CHARS_NUM_SIZE);
+                    ptr::copy_nonoverlapping(
+                        &size as *const usize as *const u8,
+                        buf.add(buf_pointer),
+                        TEXT_CHARS_NUM_SIZE,
+                    );
                     buf_pointer += TEXT_CHARS_NUM_SIZE;
                 }
                 _ => {}
@@ -295,24 +367,44 @@ impl CreateStmt {
         });
 
         if file.write(vec.as_slice()).is_err() {
-            return Err(format!("Can not write structure metadata for table {}!", self.table));
+            return Err(format!(
+                "Can not write structure metadata for table {}!",
+                self.table
+            ));
         };
         Ok(())
     }
 
-    unsafe fn write_index_metadata(&self, mut file: File, primary_field: &FieldDefinition) -> Result<(), String> {
+    unsafe fn write_index_metadata(
+        &self,
+        mut file: File,
+        primary_field: &FieldDefinition,
+    ) -> Result<(), String> {
         let mut vec: [u8; BTREE_METADATA_SIZE] = [0; BTREE_METADATA_SIZE];
         let buf = vec.as_mut_ptr();
         let mut buf_pointer = 0; // pointer that points to the position where we should start reading
 
-        let data_type_primary: u8 = (primary_field.data_type.to_bit_code() << 1) | primary_field.is_primary_key.to_u8();
-        ptr::copy_nonoverlapping(&data_type_primary as *const u8, buf.add(buf_pointer), INDEXED_FIELD_TYPE_PRIMARY);
+        let data_type_primary: u8 =
+            (primary_field.data_type.to_bit_code() << 1) | primary_field.is_primary_key.to_u8();
+        ptr::copy_nonoverlapping(
+            &data_type_primary as *const u8,
+            buf.add(buf_pointer),
+            INDEXED_FIELD_TYPE_PRIMARY,
+        );
         buf_pointer += INDEXED_FIELD_TYPE_PRIMARY;
 
-        ptr::copy_nonoverlapping(&primary_field.data_type.get_size() as *const usize as *const u8, buf.add(buf_pointer), INDEXED_FIELD_SIZE);
+        ptr::copy_nonoverlapping(
+            &primary_field.data_type.get_size() as *const usize as *const u8,
+            buf.add(buf_pointer),
+            INDEXED_FIELD_SIZE,
+        );
         buf_pointer += INDEXED_FIELD_SIZE;
 
-        ptr::copy_nonoverlapping(primary_field.field_name.as_ptr(), buf.add(buf_pointer), primary_field.field_name.len());
+        ptr::copy_nonoverlapping(
+            primary_field.field_name.as_ptr(),
+            buf.add(buf_pointer),
+            primary_field.field_name.len(),
+        );
 
         if file.write(&vec).is_err() {
             return Err(format!("Can not write metadata for table {}!", self.table));
@@ -324,7 +416,11 @@ impl CreateStmt {
         let mut vec = vec![0; SEQUENTIAL_NODE_HEADER_SIZE];
         let buf = vec.as_mut_ptr();
         let cells_num = (PAGE_SIZE - SEQUENTIAL_NODE_HEADER_SIZE) / row_size;
-        ptr::copy_nonoverlapping(&cells_num as *const usize as *mut u8, buf, LEAF_NODE_NUM_CELLS_SIZE);
+        ptr::copy_nonoverlapping(
+            &cells_num as *const usize as *mut u8,
+            buf,
+            LEAF_NODE_NUM_CELLS_SIZE,
+        );
 
         if file.write(vec.as_slice()).is_err() {
             return Err(format!("Can not write metadata for table {}!", self.table));
@@ -366,9 +462,7 @@ pub(crate) struct OrderByCluster {
 
 impl OrderByCluster {
     pub fn new(order_by_exprs: Vec<OrderByExpr>) -> OrderByCluster {
-        OrderByCluster {
-            order_by_exprs
-        }
+        OrderByCluster { order_by_exprs }
     }
 }
 
@@ -380,10 +474,7 @@ pub(crate) struct OrderByExpr {
 
 impl OrderByExpr {
     pub fn new(field: String, order: Order) -> OrderByExpr {
-        OrderByExpr {
-            field,
-            order,
-        }
+        OrderByExpr { field, order }
     }
 }
 
@@ -394,9 +485,7 @@ pub(crate) struct ConditionCluster {
 
 impl ConditionCluster {
     pub(crate) fn new(conditions: Vec<ConditionExpr>) -> ConditionCluster {
-        ConditionCluster {
-            conditions,
-        }
+        ConditionCluster { conditions }
     }
 }
 
@@ -409,7 +498,12 @@ pub(crate) struct ConditionExpr {
 }
 
 impl ConditionExpr {
-    pub(crate) fn new(logical_operator: LogicalOperator, field: String, operator: Operator, value: Value) -> ConditionExpr {
+    pub(crate) fn new(
+        logical_operator: LogicalOperator,
+        field: String,
+        operator: Operator,
+        value: Value,
+    ) -> ConditionExpr {
         ConditionExpr {
             logical_operator,
             field,
@@ -428,8 +522,8 @@ pub(crate) enum Order {
 impl Order {
     pub fn is_asc(&self) -> bool {
         match self {
-            Order::ASC => { true }
-            _ => { false }
+            Order::ASC => true,
+            _ => false,
         }
     }
 
@@ -443,11 +537,9 @@ impl TryFrom<&str> for Order {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
-            "asc" => {
-                Ok(Order::ASC)
-            }
-            "desc" => { Ok(Order::DESC) }
-            _ => { Err("Unknown Order.") }
+            "asc" => Ok(Order::ASC),
+            "desc" => Ok(Order::DESC),
+            _ => Err("Unknown Order."),
         }
     }
 }
@@ -471,15 +563,15 @@ pub(crate) enum LogicalOperator {
 impl LogicalOperator {
     pub fn operate(&self, b1: bool, b2: bool) -> bool {
         match self {
-            LogicalOperator::OR => { b1 | b2 }
-            LogicalOperator::AND => { b1 & b2 }
+            LogicalOperator::OR => b1 | b2,
+            LogicalOperator::AND => b1 & b2,
         }
     }
 
     pub fn is_and(&self) -> bool {
         match self {
-            LogicalOperator::OR => { false }
-            LogicalOperator::AND => { true }
+            LogicalOperator::OR => false,
+            LogicalOperator::AND => true,
         }
     }
 
@@ -493,13 +585,9 @@ impl TryFrom<&str> for LogicalOperator {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
-            "or" => {
-                Ok(LogicalOperator::OR)
-            }
-            "and" => {
-                Ok(LogicalOperator::AND)
-            }
-            _ => { Err("Unknown logical operator.") }
+            "or" => Ok(LogicalOperator::OR),
+            "and" => Ok(LogicalOperator::AND),
+            _ => Err("Unknown logical operator."),
         }
     }
 }
@@ -507,11 +595,11 @@ impl TryFrom<&str> for LogicalOperator {
 impl Operator {
     pub(crate) fn operate(&self, a: &Value, b: &Value) -> bool {
         match self {
-            EQUALS(negative) => { (a == b) ^ negative }
-            GT => { a > b }
-            GTE => { a >= b }
-            LT => { a < b }
-            LTE => { a <= b }
+            EQUALS(negative) => (a == b) ^ negative,
+            GT => a > b,
+            GTE => a >= b,
+            LT => a < b,
+            LTE => a <= b,
             IN(negative) => {
                 if let Value::ARRAY(vec) = b {
                     vec.contains(&a) ^ negative
@@ -528,33 +616,15 @@ impl TryFrom<String> for Operator {
 
     fn try_from(value: String) -> Result<Operator, Self::Error> {
         match value.as_str() {
-            "=" => {
-                Ok(EQUALS(false))
-            }
-            "!=" => {
-                Ok(EQUALS(true))
-            }
-            ">" => {
-                Ok(GT)
-            }
-            ">=" => {
-                Ok(GTE)
-            }
-            "<" => {
-                Ok(LT)
-            }
-            "<=" => {
-                Ok(LTE)
-            }
-            "in" => {
-                Ok(IN(false))
-            }
-            "not in" => {
-                Ok(IN(true))
-            }
-            _ => {
-                Err(format!("operator `{}` does not exist;", value))
-            }
+            "=" => Ok(EQUALS(false)),
+            "!=" => Ok(EQUALS(true)),
+            ">" => Ok(GT),
+            ">=" => Ok(GTE),
+            "<" => Ok(LT),
+            "<=" => Ok(LTE),
+            "in" => Ok(IN(false)),
+            "not in" => Ok(IN(true)),
+            _ => Err(format!("operator `{}` does not exist;", value)),
         }
     }
 }
@@ -572,12 +642,12 @@ pub enum Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match self {
-            Value::INTEGER(i) => { *i == other.unwrap_as_int().unwrap() }
-            Value::FLOAT(f) => { *f == other.unwrap_as_float().unwrap() }
-            Value::BOOLEAN(b) => { *b == other.unwrap_into_bool().unwrap() }
-            Value::STRING(s) => { s == other.unwrap_as_string().unwrap() }
-            Value::ARRAY(a) => { a == other.unwrap_as_array().unwrap() }
-            Value::SelectStmt(_) => { other.is_select_stmt() }
+            Value::INTEGER(i) => *i == other.unwrap_as_int().unwrap(),
+            Value::FLOAT(f) => *f == other.unwrap_as_float().unwrap(),
+            Value::BOOLEAN(b) => *b == other.unwrap_into_bool().unwrap(),
+            Value::STRING(s) => s == other.unwrap_as_string().unwrap(),
+            Value::ARRAY(a) => a == other.unwrap_as_array().unwrap(),
+            Value::SelectStmt(_) => other.is_select_stmt(),
         }
     }
 }
@@ -585,12 +655,12 @@ impl PartialEq for Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self {
-            Value::INTEGER(i) => { i.partial_cmp(&other.unwrap_as_int().unwrap()) }
-            Value::FLOAT(f) => { f.partial_cmp(&other.unwrap_as_float().unwrap()) }
-            Value::BOOLEAN(b) => { b.partial_cmp(&other.unwrap_into_bool().unwrap()) }
-            Value::STRING(s) => { s.partial_cmp(&other.unwrap_as_string().unwrap()) }
-            Value::ARRAY(_) => { None }
-            Value::SelectStmt(_) => { None }
+            Value::INTEGER(i) => i.partial_cmp(&other.unwrap_as_int().unwrap()),
+            Value::FLOAT(f) => f.partial_cmp(&other.unwrap_as_float().unwrap()),
+            Value::BOOLEAN(b) => b.partial_cmp(&other.unwrap_into_bool().unwrap()),
+            Value::STRING(s) => s.partial_cmp(&other.unwrap_as_string().unwrap()),
+            Value::ARRAY(_) => None,
+            Value::SelectStmt(_) => None,
         }
     }
 }
@@ -598,76 +668,62 @@ impl PartialOrd for Value {
 impl Value {
     pub(crate) fn are_same_variant(a: &Value, b: &Value) -> bool {
         match (a, b) {
-            (Value::INTEGER(_), Value::INTEGER(_)) => {
-                true
-            }
-            (Value::FLOAT(_), Value::FLOAT(_)) => {
-                true
-            }
-            (Value::STRING(_), Value::STRING(_)) => {
-                true
-            }
-            (Value::ARRAY(_), Value::ARRAY(_)) => {
-                true
-            }
-            (Value::BOOLEAN(_), Value::BOOLEAN(_)) => {
-                true
-            }
-            (Value::SelectStmt(_), Value::SelectStmt(_)) => {
-                true
-            }
-            _ => {
-                false
-            }
+            (Value::INTEGER(_), Value::INTEGER(_)) => true,
+            (Value::FLOAT(_), Value::FLOAT(_)) => true,
+            (Value::STRING(_), Value::STRING(_)) => true,
+            (Value::ARRAY(_), Value::ARRAY(_)) => true,
+            (Value::BOOLEAN(_), Value::BOOLEAN(_)) => true,
+            (Value::SelectStmt(_), Value::SelectStmt(_)) => true,
+            _ => false,
         }
     }
 
     pub fn unwrap_as_int(&self) -> Result<i32, &str> {
         match self {
             Value::INTEGER(v) => Ok(*v),
-            _ => Err("Current Value is not an Integer.")
+            _ => Err("Current Value is not an Integer."),
         }
     }
 
     pub fn unwrap_as_float(&self) -> Result<f32, &str> {
         match self {
             Value::FLOAT(v) => Ok(*v),
-            _ => Err("Current Value is not a Float.")
+            _ => Err("Current Value is not a Float."),
         }
     }
 
     pub fn unwrap_as_string(&self) -> Result<&String, &str> {
         match self {
             Value::STRING(v) => Ok(v),
-            _ => Err("Current Value is not a String.")
+            _ => Err("Current Value is not a String."),
         }
     }
 
     pub fn unwrap_as_array(&self) -> Result<&Vec<Value>, &str> {
         match self {
             Value::ARRAY(v) => Ok(v),
-            _ => Err("Current Value is not an Array.")
+            _ => Err("Current Value is not an Array."),
         }
     }
 
     pub fn unwrap_into_bool(&self) -> Result<bool, &str> {
         match self {
             Value::BOOLEAN(v) => Ok(*v),
-            _ => Err("Current Value is not a Boolean.")
+            _ => Err("Current Value is not a Boolean."),
         }
     }
 
     pub fn is_select_stmt(&self) -> bool {
         match self {
             Value::SelectStmt(_) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub(crate) fn is_array(&self) -> bool {
         match self {
             Value::ARRAY(_) => true,
-            _ => false
+            _ => false,
         }
     }
 
@@ -686,17 +742,29 @@ impl Value {
                 }
                 DataType::INTEGER => {
                     let key: i32 = 0;
-                    ptr::copy_nonoverlapping(src, &key as *const i32 as *mut u8, key_type.get_size());
+                    ptr::copy_nonoverlapping(
+                        src,
+                        &key as *const i32 as *mut u8,
+                        key_type.get_size(),
+                    );
                     Value::INTEGER(key)
                 }
                 DataType::FLOAT => {
                     let key: f32 = 0.0;
-                    ptr::copy_nonoverlapping(src, &key as *const f32 as *mut u8, key_type.get_size());
+                    ptr::copy_nonoverlapping(
+                        src,
+                        &key as *const f32 as *mut u8,
+                        key_type.get_size(),
+                    );
                     Value::FLOAT(key)
                 }
                 DataType::BOOLEAN => {
                     let key: bool = false;
-                    ptr::copy_nonoverlapping(src, &key as *const bool as *mut u8, key_type.get_size());
+                    ptr::copy_nonoverlapping(
+                        src,
+                        &key as *const bool as *mut u8,
+                        key_type.get_size(),
+                    );
                     Value::BOOLEAN(key)
                 }
             }
@@ -705,14 +773,10 @@ impl Value {
 
     pub fn to_string(&self) -> String {
         match self {
-            Value::INTEGER(i) => { i.to_string() }
-            Value::FLOAT(f) => { f.to_string() }
-            Value::BOOLEAN(b) => {
-                b.to_string()
-            }
-            Value::STRING(s) => {
-                s.to_string()
-            }
+            Value::INTEGER(i) => i.to_string(),
+            Value::FLOAT(f) => f.to_string(),
+            Value::BOOLEAN(b) => b.to_string(),
+            Value::STRING(s) => s.to_string(),
             Value::ARRAY(a) => {
                 let mut s = String::new();
                 s.push('[');
@@ -724,9 +788,7 @@ impl Value {
                 s.push(']');
                 s
             }
-            Value::SelectStmt(_) => {
-                String::new()
-            }
+            Value::SelectStmt(_) => String::new(),
         }
     }
 }
@@ -742,35 +804,35 @@ pub enum DataType {
 impl DataType {
     pub fn is_text(&self) -> bool {
         match self {
-            DataType::TEXT(_) => { true }
-            _ => { false }
+            DataType::TEXT(_) => true,
+            _ => false,
         }
     }
     pub fn to_bit_code(&self) -> u8 {
         match self {
-            DataType::TEXT(_) => { 0b0000_0000 }
-            DataType::INTEGER => { 0b0000_0001 }
-            DataType::FLOAT => { 0b0000_0010 }
-            DataType::BOOLEAN => { 0b0000_0011 }
+            DataType::TEXT(_) => 0b0000_0000,
+            DataType::INTEGER => 0b0000_0001,
+            DataType::FLOAT => 0b0000_0010,
+            DataType::BOOLEAN => 0b0000_0011,
         }
     }
 
     pub fn from_bit_code(bit_code: u8) -> Result<DataType, String> {
         match bit_code {
-            0b0000_0000 => { Ok(DataType::TEXT(TEXT_DEFAULT_SIZE)) }
-            0b0000_0001 => { Ok(DataType::INTEGER) }
-            0b0000_0010 => { Ok(DataType::FLOAT) }
-            0b0000_0011 => { Ok(DataType::BOOLEAN) }
-            _ => { Err(format!("Unknown bit code {}", bit_code)) }
+            0b0000_0000 => Ok(DataType::TEXT(TEXT_DEFAULT_SIZE)),
+            0b0000_0001 => Ok(DataType::INTEGER),
+            0b0000_0010 => Ok(DataType::FLOAT),
+            0b0000_0011 => Ok(DataType::BOOLEAN),
+            _ => Err(format!("Unknown bit code {}", bit_code)),
         }
     }
 
     pub fn get_size(&self) -> usize {
         match self {
-            DataType::TEXT(size) => { *size }
-            DataType::INTEGER => { INTEGER_SIZE }
-            DataType::FLOAT => { FLOAT_SIZE }
-            DataType::BOOLEAN => { BOOLEAN_SIZE }
+            DataType::TEXT(size) => *size,
+            DataType::INTEGER => INTEGER_SIZE,
+            DataType::FLOAT => FLOAT_SIZE,
+            DataType::BOOLEAN => BOOLEAN_SIZE,
         }
     }
 }

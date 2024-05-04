@@ -8,9 +8,11 @@ pub(crate) enum NodeType {
 impl From<u8> for NodeType {
     fn from(value: u8) -> Self {
         match value {
-            0 => { Leaf }
-            1 => { Internal }
-            _ => { panic!("Db file contains unknown NodeType. Corrupt file.") }
+            0 => Leaf,
+            1 => Internal,
+            _ => {
+                panic!("Db file contains unknown NodeType. Corrupt file.")
+            }
         }
     }
 }

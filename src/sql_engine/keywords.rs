@@ -14,7 +14,23 @@ pub const INTEGER: &str = "integer";
 pub const FLOAT: &str = "float";
 pub const BOOLEAN: &str = "boolean";
 
-const  KEY_WORDS: [&str; 15]  = [SELECT, INSERT, INTO, INSERT_INTO, FROM, WHERE, ORDER_BY, NOT, VALUES, CREATE_TABLE, PRIMARY, TEXT, INTEGER, FLOAT, BOOLEAN];
+const KEY_WORDS: [&str; 15] = [
+    SELECT,
+    INSERT,
+    INTO,
+    INSERT_INTO,
+    FROM,
+    WHERE,
+    ORDER_BY,
+    NOT,
+    VALUES,
+    CREATE_TABLE,
+    PRIMARY,
+    TEXT,
+    INTEGER,
+    FLOAT,
+    BOOLEAN,
+];
 
 pub fn is_key_words(k: &str) -> bool {
     KEY_WORDS.contains(&k)

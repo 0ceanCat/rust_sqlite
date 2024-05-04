@@ -1,5 +1,9 @@
-use crate::sql_engine::sql_structs::{SelectStmt, WhereExpr, InsertStmt, ConditionCluster, ConditionExpr, Operator, LogicalOperator, Value, OrderByCluster, OrderByExpr, Order, SqlStmt, CreateStmt, FieldDefinition, DataType};
 use crate::sql_engine::keywords::*;
+use crate::sql_engine::sql_structs::{
+    ConditionCluster, ConditionExpr, CreateStmt, DataType, FieldDefinition, InsertStmt,
+    LogicalOperator, Operator, Order, OrderByCluster, OrderByExpr, SelectStmt, SqlStmt, Value,
+    WhereExpr,
+};
 use crate::storage_engine::config::FIELD_NAME_SIZE;
 
 static BLANK_SYMBOLS: [char; 4] = [' ', '\t', '\n', '\r'];
@@ -18,7 +22,8 @@ impl SqlParser {
         SqlParser {
             position: 0,
             input: vec,
-        }.parse()
+        }
+        .parse()
     }
 
     fn parse(&mut self) -> Result<SqlStmt, String> {
@@ -123,19 +128,35 @@ impl<'a> SelectStmtParser<'a> {
 
         self.sql_parser.skip_white_spaces();
 
-        let where_stmt: Option<WhereExpr> = if self.sql_parser.is_end() || self.sql_parser.starts_with(ORDER_BY){
-            None
-        } else {
-            Some(WhereStmtParser { sql_parser: self.sql_parser }.parse()?)
-        };
+        let where_stmt: Option<WhereExpr> =
+            if self.sql_parser.is_end() || self.sql_parser.starts_with(ORDER_BY) {
+                None
+            } else {
+                Some(
+                    WhereStmtParser {
+                        sql_parser: self.sql_parser,
+                    }
+                    .parse()?,
+                )
+            };
 
         let order_by_stmt: Option<OrderByCluster> = if self.sql_parser.is_end() {
             None
         } else {
-            Some(OrderByExprParser { sql_parser: self.sql_parser }.parse()?)
+            Some(
+                OrderByExprParser {
+                    sql_parser: self.sql_parser,
+                }
+                .parse()?,
+            )
         };
 
-        Ok(SelectStmt::new(selected_fields, table, where_stmt, order_by_stmt))
+        Ok(SelectStmt::new(
+            selected_fields,
+            table,
+            where_stmt,
+            order_by_stmt,
+        ))
     }
 
     fn parse_selected_fields(&mut self) -> Result<Vec<String>, String> {
@@ -162,7 +183,9 @@ impl<'a> SelectStmtParser<'a> {
                 self.sql_parser.advance(); // skip ','
                 self.sql_parser.skip_white_spaces();
             } else if !&self.sql_parser.starts_with(FROM) {
-                return Err(String::from("Syntax error, there must be a ',' between two selected fields."));
+                return Err(String::from(
+                    "Syntax error, there must be a ',' between two selected fields.",
+                ));
             }
         }
 
@@ -177,7 +200,10 @@ struct WhereStmtParser<'a> {
 impl<'a> WhereStmtParser<'a> {
     fn parse(&mut self) -> Result<WhereExpr, String> {
         if !self.sql_parser.starts_with(WHERE) {
-            return Err(format!("Syntax error, expected a Where statement, but a token `{}` was found.", self.sql_parser.read_token()?));
+            return Err(format!(
+                "Syntax error, expected a Where statement, but a token `{}` was found.",
+                self.sql_parser.read_token()?
+            ));
         }
         self.sql_parser.position += WHERE.len();
         self.sql_parser.skip_white_spaces();
@@ -194,15 +220,21 @@ impl<'a> WhereStmtParser<'a> {
                 break;
             }
 
-            logical_op = Some(LogicalOperator::try_from(self.sql_parser.read_token()?.as_str())?);
+            logical_op = Some(LogicalOperator::try_from(
+                self.sql_parser.read_token()?.as_str(),
+            )?);
         }
 
         if logical_op.is_some() {
-            return Err(String::from("Syntax error, Where statement is not complete."));
+            return Err(String::from(
+                "Syntax error, Where statement is not complete.",
+            ));
         }
 
         if condition_exprs.is_empty() {
-            return Err(String::from("Syntax error, empty Where statement detected."));
+            return Err(String::from(
+                "Syntax error, empty Where statement detected.",
+            ));
         }
 
         Ok(WhereExpr::new(condition_exprs))
@@ -236,7 +268,10 @@ impl<'a> WhereStmtParser<'a> {
         Ok(ConditionCluster::new(conditions))
     }
 
-    fn parse_condition(&mut self, logical_operator: LogicalOperator) -> Result<ConditionExpr, String> {
+    fn parse_condition(
+        &mut self,
+        logical_operator: LogicalOperator,
+    ) -> Result<ConditionExpr, String> {
         self.sql_parser.skip_white_spaces();
         let field = self.sql_parser.read_token()?;
         check_key_word(&field)?;
@@ -244,10 +279,16 @@ impl<'a> WhereStmtParser<'a> {
 
         self.sql_parser.skip_white_spaces();
         let op = {
-            OperatorParser { sql_parser: self.sql_parser }.parse()?
+            OperatorParser {
+                sql_parser: self.sql_parser,
+            }
+            .parse()?
         };
         self.sql_parser.skip_white_spaces();
-        let v = ValueParser { sql_parser: self.sql_parser }.parse()?;
+        let v = ValueParser {
+            sql_parser: self.sql_parser,
+        }
+        .parse()?;
         self.sql_parser.skip_white_spaces();
         Ok(ConditionExpr::new(logical_operator, field, op, v))
     }
@@ -270,12 +311,17 @@ impl<'a> InsertStmtParser<'a> {
 
         let values = self.parse_values()?;
 
-        if !self.sql_parser.is_end() && self.sql_parser.current_char() != ';'{
-            return Err(format!("Syntax error, `;` expected but `{}` was found.", self.sql_parser.current_char()));
+        if !self.sql_parser.is_end() && self.sql_parser.current_char() != ';' {
+            return Err(format!(
+                "Syntax error, `;` expected but `{}` was found.",
+                self.sql_parser.current_char()
+            ));
         }
 
         if fields.first().unwrap() != "*" && values.len() != fields.len() {
-            return Err(String::from("Number of inserted rows and row values are not the same."));
+            return Err(String::from(
+                "Number of inserted rows and row values are not the same.",
+            ));
         }
 
         Ok(InsertStmt::new(table_name, fields, values))
@@ -301,7 +347,9 @@ impl<'a> InsertStmtParser<'a> {
             }
 
             if self.sql_parser.is_end() || self.sql_parser.current_char() != ')' {
-                return Err(String::from("Syntax error, inserted fields is not closed, expected a ')'"));
+                return Err(String::from(
+                    "Syntax error, inserted fields is not closed, expected a ')'",
+                ));
             }
             self.sql_parser.advance();
         } else {
@@ -322,7 +370,10 @@ impl<'a> InsertStmtParser<'a> {
             let mut values = Vec::<Value>::new();
             while !self.sql_parser.is_end() {
                 self.sql_parser.skip_white_spaces();
-                let value = ValueParser { sql_parser: self.sql_parser }.parse()?;
+                let value = ValueParser {
+                    sql_parser: self.sql_parser,
+                }
+                .parse()?;
                 values.push(value);
                 self.sql_parser.skip_white_spaces();
                 if !self.sql_parser.is_end() && self.sql_parser.current_char() == ',' {
@@ -332,7 +383,9 @@ impl<'a> InsertStmtParser<'a> {
                 }
             }
             if self.sql_parser.is_end() || self.sql_parser.current_char() != ')' {
-                return Err(String::from("Syntax error, `values` is not closed, expected a ')'"));
+                return Err(String::from(
+                    "Syntax error, `values` is not closed, expected a ')'",
+                ));
             }
             self.sql_parser.advance();
             return Ok(values);
@@ -370,13 +423,16 @@ impl<'a> CreateStmtParser<'a> {
                 let field = self.sql_parser.read_token()?;
 
                 if field.len() > FIELD_NAME_SIZE {
-                    return Err(format!("Field name can not exceed {FIELD_NAME_SIZE}"))
+                    return Err(format!("Field name can not exceed {FIELD_NAME_SIZE}"));
                 }
 
                 check_valid_field_name(&field)?;
                 check_key_word(&field)?;
                 self.sql_parser.skip_white_spaces();
-                let data_type = DataTypeParser { sql_parser: self.sql_parser }.parse()?;
+                let data_type = DataTypeParser {
+                    sql_parser: self.sql_parser,
+                }
+                .parse()?;
                 self.sql_parser.skip_white_spaces();
 
                 let primary = self.sql_parser.starts_with(PRIMARY);
@@ -393,12 +449,16 @@ impl<'a> CreateStmtParser<'a> {
                 } else if !self.sql_parser.is_end() && self.sql_parser.current_char() == ')' {
                     break;
                 } else {
-                    return Err(String::from("Syntax error, `,` expected between defined fields."))
+                    return Err(String::from(
+                        "Syntax error, `,` expected between defined fields.",
+                    ));
                 }
             }
 
             if field_definitions.is_empty() {
-                return Err(String::from("Syntax error, Create statement has no defined values"));
+                return Err(String::from(
+                    "Syntax error, Create statement has no defined values",
+                ));
             }
 
             if field_definitions.iter().filter(|d| d.is_primary()).count() > 1 {
@@ -420,7 +480,10 @@ impl<'a> OrderByExprParser<'a> {
         self.sql_parser.skip_white_spaces();
 
         if !self.sql_parser.starts_with(ORDER_BY) {
-            return Err(format!("Syntax error, expect `order by`, but found {}", self.sql_parser.read_token()?));
+            return Err(format!(
+                "Syntax error, expect `order by`, but found {}",
+                self.sql_parser.read_token()?
+            ));
         }
 
         self.sql_parser.position += ORDER_BY.len();
@@ -444,7 +507,9 @@ impl<'a> OrderByExprParser<'a> {
             order_bys.push(OrderByExpr::new(field, order));
         }
 
-        Ok(OrderByCluster { order_by_exprs: order_bys })
+        Ok(OrderByCluster {
+            order_by_exprs: order_bys,
+        })
     }
 }
 
@@ -455,11 +520,16 @@ struct ValueParser<'a> {
 impl<'a> ValueParser<'a> {
     fn parse(&mut self) -> Result<Value, String> {
         match self.sql_parser.current_char() {
-            '[' => { self.parse_array() }
-            '\"' => { self.parse_string() }
-            '0'..='9' | '+' | '-' => { self.parse_number() }
-            't' | 'f' => { self.parse_boolean() }
-            _ => { return Err(format!("Unknown type of value `{}` detected.", self.sql_parser.read_token()?)); }
+            '[' => self.parse_array(),
+            '\"' => self.parse_string(),
+            '0'..='9' | '+' | '-' => self.parse_number(),
+            't' | 'f' => self.parse_boolean(),
+            _ => {
+                return Err(format!(
+                    "Unknown type of value `{}` detected.",
+                    self.sql_parser.read_token()?
+                ));
+            }
         }
     }
 
@@ -471,13 +541,21 @@ impl<'a> ValueParser<'a> {
             self.sql_parser.skip_white_spaces();
             let value = self.parse()?;
             match value {
-                Value::ARRAY(_) => return Err(String::from("An array must contain only primitive values. But array detected.")),
-                Value::SelectStmt(_) => return Err(String::from("An array must contain only primitive values. But select statement detected.")),
+                Value::ARRAY(_) => {
+                    return Err(String::from(
+                        "An array must contain only primitive values. But array detected.",
+                    ))
+                }
+                Value::SelectStmt(_) => return Err(String::from(
+                    "An array must contain only primitive values. But select statement detected.",
+                )),
                 _ => {}
             }
 
             if !array.is_empty() && !Value::are_same_variant(&array[0], &value) {
-                return Err(String::from("All element of an array must be the same type."));
+                return Err(String::from(
+                    "All element of an array must be the same type.",
+                ));
             }
 
             array.push(value);
@@ -488,7 +566,9 @@ impl<'a> ValueParser<'a> {
         }
 
         if self.sql_parser.is_end() || self.sql_parser.current_char() != ']' {
-            return Err(String::from("Detected an array value, but it is not closed. ']' is expected."));
+            return Err(String::from(
+                "Detected an array value, but it is not closed. ']' is expected.",
+            ));
         }
 
         self.sql_parser.advance(); // skip ']'
@@ -544,20 +624,26 @@ impl<'a> ValueParser<'a> {
             self.sql_parser.position += "false".len();
             return Ok(Value::BOOLEAN(false));
         };
-        Err(format!("Unknown type of value `{}` detected", self.sql_parser.read_token()?))
+        Err(format!(
+            "Unknown type of value `{}` detected",
+            self.sql_parser.read_token()?
+        ))
     }
 
     fn parse_int(&mut self) -> Result<Value, String> {
         match self.sql_parser.current_char() {
             '0'..='9' => {
                 let mut result = 0;
-                while !self.sql_parser.is_end() && ('0'..='9').contains(&self.sql_parser.current_char()) {
-                    result = result * 10 + ValueParser::char_to_integer(self.sql_parser.current_char());
+                while !self.sql_parser.is_end()
+                    && ('0'..='9').contains(&self.sql_parser.current_char())
+                {
+                    result =
+                        result * 10 + ValueParser::char_to_integer(self.sql_parser.current_char());
                     self.sql_parser.advance();
                 }
                 return Ok(Value::INTEGER(result));
             }
-            _ => Err(String::from("Integer parse failed"))
+            _ => Err(String::from("Integer parse failed")),
         }
     }
 
@@ -585,7 +671,9 @@ impl<'a> OperatorParser<'a> {
             operator.push_str("in");
             self.sql_parser.position += "in".len();
         } else {
-            while !self.sql_parser.is_end() && OPERATORS_SYMBOLS.contains(&self.sql_parser.current_char()) {
+            while !self.sql_parser.is_end()
+                && OPERATORS_SYMBOLS.contains(&self.sql_parser.current_char())
+            {
                 operator.push(self.sql_parser.current_char());
                 self.sql_parser.advance();
             }
@@ -618,10 +706,10 @@ impl<'a> DataTypeParser<'a> {
             Ok(DataType::TEXT(size))
         } else {
             match data_type.as_str() {
-                "integer" => { Ok(DataType::INTEGER) }
-                "float" => { Ok(DataType::FLOAT) }
-                "boolean" => { Ok(DataType::BOOLEAN) }
-                _ => { Err(format!("Unknown data type `{}` was found.", data_type)) }
+                "integer" => Ok(DataType::INTEGER),
+                "float" => Ok(DataType::FLOAT),
+                "boolean" => Ok(DataType::BOOLEAN),
+                _ => Err(format!("Unknown data type `{}` was found.", data_type)),
             }
         }
     }
@@ -629,12 +717,8 @@ impl<'a> DataTypeParser<'a> {
 
 fn check_key_word(k: &String) -> Result<(), String> {
     match !is_key_words(k) {
-        true => {
-            Ok(())
-        }
-        false => {
-            Err(format!("You can not use keyword `{}` as a field.", k))
-        }
+        true => Ok(()),
+        false => Err(format!("You can not use keyword `{}` as a field.", k)),
     }
 }
 

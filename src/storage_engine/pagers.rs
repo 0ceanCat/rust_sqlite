@@ -3,9 +3,10 @@ use std::io::{Seek, SeekFrom, Write};
 use std::os::windows::fs::FileExt;
 use std::process::exit;
 use std::ptr;
+
 use crate::sql_engine::sql_structs::{DataType, Value};
-use crate::storage_engine::config::*;
 use crate::storage_engine::common::Page;
+use crate::storage_engine::config::*;
 use crate::storage_engine::enums::NodeType;
 
 pub trait Pager {
@@ -17,7 +18,7 @@ pub trait Pager {
 pub struct AbstractPager {
     pages: Box<[Option<Page>; TABLE_MAX_PAGES]>,
     total_pages: usize,
-    fd: File
+    fd: File,
 }
 
 impl AbstractPager {
@@ -25,7 +26,7 @@ impl AbstractPager {
         AbstractPager {
             pages: Box::new([None; TABLE_MAX_PAGES]),
             total_pages,
-            fd: file
+            fd: file,
         }
     }
 }
@@ -37,7 +38,12 @@ impl AbstractPager {
 
     fn read_page_from_disk(&self, page_index: usize) -> Page {
         let mut bytes = [0; PAGE_SIZE];
-        self.fd.seek_read(&mut bytes, (page_index * PAGE_SIZE + BTREE_METADATA_SIZE) as u64).unwrap();
+        self.fd
+            .seek_read(
+                &mut bytes,
+                (page_index * PAGE_SIZE + BTREE_METADATA_SIZE) as u64,
+            )
+            .unwrap();
         bytes
     }
 
@@ -48,7 +54,11 @@ impl AbstractPager {
             return false;
         }
 
-        self.fd.seek(SeekFrom::Start((page_index * PAGE_SIZE + BTREE_METADATA_SIZE) as u64)).unwrap();
+        self.fd
+            .seek(SeekFrom::Start(
+                (page_index * PAGE_SIZE + BTREE_METADATA_SIZE) as u64,
+            ))
+            .unwrap();
         self.fd.write(page.unwrap()).unwrap();
         true
     }
@@ -62,10 +72,12 @@ impl Pager for AbstractPager {
         }
     }
 
-
     fn get_or_create_page(&mut self, page_index: usize) -> *mut u8 {
         if page_index > TABLE_MAX_PAGES {
-            println!("Tried to fetch page number out of bounds. {} > {}\n", page_index, TABLE_MAX_PAGES);
+            println!(
+                "Tried to fetch page number out of bounds. {} > {}\n",
+                page_index, TABLE_MAX_PAGES
+            );
             exit(1);
         }
 
@@ -174,31 +186,52 @@ impl BtreePager {
         }
     }
 
-    pub(crate) fn get_leaf_node_cell_key(&self, page: *const u8, cell_index: usize, key_type: &DataType) -> Value {
+    pub(crate) fn get_leaf_node_cell_key(
+        &self,
+        page: *const u8,
+        cell_index: usize,
+        key_type: &DataType,
+    ) -> Value {
         unsafe {
-            Value::from_ptr(key_type, page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.leaf_node_cell_size))
+            Value::from_ptr(
+                key_type,
+                page.add(
+                    LEAF_NODE_BODY_OFFSET
+                        + cell_index * self.btree_leaf_node_body_layout.leaf_node_cell_size,
+                ),
+            )
         }
     }
 
-    pub(crate) fn set_leaf_node_cell_key(&self, page: *mut u8, cell_index: usize, key_size: usize, key: &Value) {
+    pub(crate) fn set_leaf_node_cell_key(
+        &self,
+        page: *mut u8,
+        cell_index: usize,
+        key_size: usize,
+        key: &Value,
+    ) {
         unsafe {
-            let dst = page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.leaf_node_cell_size);
+            let dst = page.add(
+                LEAF_NODE_BODY_OFFSET
+                    + cell_index * self.btree_leaf_node_body_layout.leaf_node_cell_size,
+            );
             Self::set_key(key_size, key, dst)
         }
     }
 
     pub(crate) fn leaf_node_cell(&self, page: *mut u8, cell_index: usize) -> *mut u8 {
         unsafe {
-            let page_ptr = page.add(LEAF_NODE_BODY_OFFSET + cell_index * self.btree_leaf_node_body_layout.leaf_node_cell_size);
+            let page_ptr = page.add(
+                LEAF_NODE_BODY_OFFSET
+                    + cell_index * self.btree_leaf_node_body_layout.leaf_node_cell_size,
+            );
             page_ptr
         }
     }
 
     pub(crate) fn get_leaf_node_value(&self, page: *mut u8, cell_index: usize) -> *mut u8 {
         let ptr = self.leaf_node_cell(page, cell_index);
-        unsafe {
-            ptr.add(self.btree_leaf_node_body_layout.leaf_node_value_offset)
-        }
+        unsafe { ptr.add(self.btree_leaf_node_body_layout.leaf_node_value_offset) }
     }
 
     pub(crate) fn get_node_type(ptr: *const u8) -> NodeType {
@@ -249,26 +282,28 @@ impl BtreePager {
     }
 
     pub(crate) fn get_internal_node_cell(page: *mut u8, cell_index: usize) -> *mut u8 {
-        unsafe {
-            page.add(INTERNAL_NODE_BODY_OFFSET + cell_index * INTERNAL_NODE_CELL_SIZE)
-        }
+        unsafe { page.add(INTERNAL_NODE_BODY_OFFSET + cell_index * INTERNAL_NODE_CELL_SIZE) }
     }
 
     pub fn get_internal_node_num_keys(node: *const u8) -> usize {
         unsafe {
             let num: usize = 0;
-            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
-                                     &num as *const usize as *mut u8,
-                                     INTERNAL_NODE_NUM_KEYS_SIZE);
+            ptr::copy_nonoverlapping(
+                node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
+                &num as *const usize as *mut u8,
+                INTERNAL_NODE_NUM_KEYS_SIZE,
+            );
             num
         }
     }
 
     pub fn set_internal_node_num_keys(node: *mut u8, num: usize) {
         unsafe {
-            ptr::copy_nonoverlapping(&num as *const usize as *mut u8,
-                                     node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
-                                     INTERNAL_NODE_NUM_KEYS_SIZE);
+            ptr::copy_nonoverlapping(
+                &num as *const usize as *mut u8,
+                node.add(INTERNAL_NODE_NUM_KEYS_OFFSET),
+                INTERNAL_NODE_NUM_KEYS_SIZE,
+            );
         }
     }
 
@@ -279,7 +314,10 @@ impl BtreePager {
     pub fn set_internal_node_child(node: *mut u8, child_index: usize, value: usize) {
         let num_keys = BtreePager::get_internal_node_num_keys(node);
         if child_index > num_keys {
-            println!("Tried to access child_num {} > num_keys {}", child_index, num_keys);
+            println!(
+                "Tried to access child_num {} > num_keys {}",
+                child_index, num_keys
+            );
             exit(1);
         } else if child_index == num_keys {
             BtreePager::set_internal_node_right_child(node, value);
@@ -291,7 +329,10 @@ impl BtreePager {
     pub fn get_internal_node_child(node: *const u8, child_index: usize) -> usize {
         let num_keys = BtreePager::get_internal_node_num_keys(node);
         if child_index > num_keys {
-            println!("Tried to access child_num {} > num_keys {}", child_index, num_keys);
+            println!(
+                "Tried to access child_num {} > num_keys {}",
+                child_index, num_keys
+            );
             exit(1);
         } else if child_index == num_keys {
             let right_child = BtreePager::get_internal_node_right_child(node);
@@ -303,7 +344,10 @@ impl BtreePager {
         } else {
             let right_child = BtreePager::get_internal_node_cell_child(node, child_index);
             if right_child == INVALID_PAGE_NUM {
-                println!("Tried to access child {} of node, but was invalid page", child_index);
+                println!(
+                    "Tried to access child {} of node, but was invalid page",
+                    child_index
+                );
                 exit(1);
             }
             right_child
@@ -313,26 +357,32 @@ impl BtreePager {
     pub fn get_internal_node_right_child(node: *const u8) -> usize {
         unsafe {
             let right_child_index: usize = 0;
-            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
-                                     &right_child_index as *const usize as *mut u8,
-                                     INTERNAL_NODE_RIGHT_CHILD_SIZE);
+            ptr::copy_nonoverlapping(
+                node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
+                &right_child_index as *const usize as *mut u8,
+                INTERNAL_NODE_RIGHT_CHILD_SIZE,
+            );
             right_child_index
         }
     }
 
     pub fn set_internal_node_right_child(node: *mut u8, cell_index: usize) {
         unsafe {
-            ptr::copy_nonoverlapping(&cell_index as *const usize as *mut u8,
-                                     node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
-                                     INTERNAL_NODE_RIGHT_CHILD_SIZE);
+            ptr::copy_nonoverlapping(
+                &cell_index as *const usize as *mut u8,
+                node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
+                INTERNAL_NODE_RIGHT_CHILD_SIZE,
+            );
         }
     }
 
     pub fn set_internal_node_cell_child(node: *mut u8, cell_index: usize, child_index: usize) {
         unsafe {
-            ptr::copy_nonoverlapping(&child_index as *const usize as *mut u8,
-                                     node.add(INTERNAL_NODE_BODY_OFFSET + cell_index * INTERNAL_NODE_CELL_SIZE),
-                                     INTERNAL_NODE_CHILD_SIZE);
+            ptr::copy_nonoverlapping(
+                &child_index as *const usize as *mut u8,
+                node.add(INTERNAL_NODE_BODY_OFFSET + cell_index * INTERNAL_NODE_CELL_SIZE),
+                INTERNAL_NODE_CHILD_SIZE,
+            );
         }
     }
 
@@ -342,21 +392,39 @@ impl BtreePager {
             ptr::copy_nonoverlapping(
                 node.add(INTERNAL_NODE_BODY_OFFSET + cell_index * INTERNAL_NODE_CELL_SIZE),
                 &child_index as *const usize as *mut u8,
-                INTERNAL_NODE_CHILD_SIZE);
+                INTERNAL_NODE_CHILD_SIZE,
+            );
             child_index
         }
     }
 
-    pub fn get_internal_node_cell_key(node: *const u8, cell_index: usize, key_type: &DataType) -> Value {
+    pub fn get_internal_node_cell_key(
+        node: *const u8,
+        cell_index: usize,
+        key_type: &DataType,
+    ) -> Value {
         unsafe {
-            let src = node.add(INTERNAL_NODE_BODY_OFFSET + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CHILD_SIZE);
+            let src = node.add(
+                INTERNAL_NODE_BODY_OFFSET
+                    + cell_index * INTERNAL_NODE_CELL_SIZE
+                    + INTERNAL_NODE_CHILD_SIZE,
+            );
             Value::from_ptr(key_type, src)
         }
     }
 
-    pub fn set_internal_node_cell_key(node: *mut u8, cell_index: usize, key_size: usize, key: &Value) {
+    pub fn set_internal_node_cell_key(
+        node: *mut u8,
+        cell_index: usize,
+        key_size: usize,
+        key: &Value,
+    ) {
         unsafe {
-            let dst = node.add(INTERNAL_NODE_BODY_OFFSET + cell_index * INTERNAL_NODE_CELL_SIZE + INTERNAL_NODE_CHILD_SIZE);
+            let dst = node.add(
+                INTERNAL_NODE_BODY_OFFSET
+                    + cell_index * INTERNAL_NODE_CELL_SIZE
+                    + INTERNAL_NODE_CHILD_SIZE,
+            );
             Self::set_key(key_size, key, dst)
         }
     }
@@ -383,32 +451,39 @@ impl BtreePager {
 
     pub(crate) fn set_leaf_node_next_leaf(node: *mut u8, next_leaf: usize) {
         unsafe {
-            ptr::copy_nonoverlapping(&next_leaf as *const usize as *mut u8,
-                                     node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
-                                     INTERNAL_NODE_RIGHT_CHILD_SIZE);
+            ptr::copy_nonoverlapping(
+                &next_leaf as *const usize as *mut u8,
+                node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
+                INTERNAL_NODE_RIGHT_CHILD_SIZE,
+            );
         }
     }
 
     pub(crate) fn get_leaf_node_next_leaf(node: *const u8) -> usize {
         unsafe {
             let next_leaf: usize = 0;
-            ptr::copy_nonoverlapping(node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
-                                     &next_leaf as *const usize as *mut u8,
-                                     INTERNAL_NODE_RIGHT_CHILD_SIZE);
+            ptr::copy_nonoverlapping(
+                node.add(INTERNAL_NODE_RIGHT_CHILD_OFFSET),
+                &next_leaf as *const usize as *mut u8,
+                INTERNAL_NODE_RIGHT_CHILD_SIZE,
+            );
             next_leaf
         }
     }
 
-
     pub fn get_node_biggest_key(&mut self, node: *const u8, key_type: &DataType) -> Value {
         match BtreePager::get_node_type(node) {
             NodeType::Internal => {
-                let right_child = self.abstract_pager.get_or_create_page(BtreePager::get_internal_node_right_child(node));
+                let right_child = self
+                    .abstract_pager
+                    .get_or_create_page(BtreePager::get_internal_node_right_child(node));
                 self.get_node_biggest_key(right_child, key_type)
             }
-            NodeType::Leaf => {
-                self.get_leaf_node_cell_key(node, BtreePager::get_leaf_node_num_cells(node) - 1, key_type)
-            }
+            NodeType::Leaf => self.get_leaf_node_cell_key(
+                node,
+                BtreePager::get_leaf_node_num_cells(node) - 1,
+                key_type,
+            ),
         }
     }
 
@@ -432,10 +507,10 @@ impl BtreePager {
         BtreePager::set_root_node(node, false);
         BtreePager::set_internal_node_num_keys(node, 0);
         /*
-         Necessary because the root page number is 0; by not initializing an internal
-         node's right child to an invalid page number when initializing the node, we may
-         end up with 0 as the node's right child, which makes the node a parent of the root
-         */
+        Necessary because the root page number is 0; by not initializing an internal
+        node's right child to an invalid page number when initializing the node, we may
+        end up with 0 as the node's right child, which makes the node a parent of the root
+        */
         BtreePager::set_internal_node_right_child(node, INVALID_PAGE_NUM);
     }
 
@@ -502,23 +577,29 @@ impl SequentialPager {
         self.abstract_pager.total_pages
     }
 
-    pub(crate) fn get_row_value(&self, page: *const u8, cell_index: usize, row_size: usize) -> *const u8 {
-        unsafe {
-            page.add(SEQUENTIAL_NODE_BODY_OFFSET + cell_index * row_size)
-        }
+    pub(crate) fn get_row_value(
+        &self,
+        page: *const u8,
+        cell_index: usize,
+        row_size: usize,
+    ) -> *const u8 {
+        unsafe { page.add(SEQUENTIAL_NODE_BODY_OFFSET + cell_index * row_size) }
     }
 
-    pub(crate) fn get_row_value_mut(&mut self, page: *mut u8, cell_index: usize, row_size: usize) -> *mut u8 {
-        unsafe {
-            page.add(SEQUENTIAL_NODE_BODY_OFFSET + cell_index * row_size)
-        }
+    pub(crate) fn get_row_value_mut(
+        &mut self,
+        page: *mut u8,
+        cell_index: usize,
+        row_size: usize,
+    ) -> *mut u8 {
+        unsafe { page.add(SEQUENTIAL_NODE_BODY_OFFSET + cell_index * row_size) }
     }
 
     pub fn flush_page_to_disk(&mut self, page_index: usize) -> bool {
         self.abstract_pager.flush_page_to_disk(page_index)
     }
 
-    pub fn increment_cells_num(&mut self, page_index: usize){
+    pub fn increment_cells_num(&mut self, page_index: usize) {
         let page_ptr = self.get_or_create_page(page_index);
         let mut cells_num: usize = 0;
         unsafe {
