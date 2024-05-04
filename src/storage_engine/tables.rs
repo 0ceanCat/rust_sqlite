@@ -13,7 +13,7 @@ use crate::storage_engine::config::*;
 use crate::storage_engine::cursor::{ReadCursor, WriteReadCursor};
 use crate::storage_engine::enums::NodeType;
 use crate::storage_engine::pagers::{BtreePager, SequentialPager};
-use crate::utils::utils::{copy, copy_nonoverlapping, indent, u8_array_to_string};
+use crate::utils::utils::{copy, copy_nonoverlapping, u8_array_to_string};
 
 pub trait Table {
     fn begin(&mut self) -> WriteReadCursor;
@@ -797,46 +797,6 @@ impl BtreeTable {
         if !splitting_root {
             self.internal_node_insert(BtreePager::get_parent(old_node), new_page_index);
             BtreePager::set_parent(new_node, BtreePager::get_parent(old_node));
-        }
-    }
-
-    pub fn print_tree(&mut self, page_num: usize, indentation_level: usize) {
-        let node = self.pager.get_page(page_num);
-        match BtreePager::get_node_type(node) {
-            NodeType::Leaf => {
-                indent(indentation_level);
-                println!("* node {:p}, index: {}: ", node, page_num);
-                let num_keys = BtreePager::get_leaf_node_num_cells(node);
-                indent(indentation_level + 1);
-                println!("- leaf (size {})", num_keys);
-                for i in 0..num_keys {
-                    indent(indentation_level + 2);
-                    println!(
-                        "- {:?}",
-                        self.pager.get_leaf_node_cell_key(node, i, &self.key_type)
-                    );
-                }
-            }
-            NodeType::Internal => {
-                let num_keys = BtreePager::get_internal_node_num_keys(node);
-                indent(indentation_level);
-                println!("- internal (size {})", num_keys);
-                if num_keys > 0 {
-                    let child: usize;
-                    for i in 0..num_keys {
-                        let child = BtreePager::get_internal_node_child(node, i);
-                        self.print_tree(child, indentation_level + 1);
-
-                        indent(indentation_level + 1);
-                        println!(
-                            "- key {:?}",
-                            BtreePager::get_internal_node_cell_key(node, i, &self.key_type)
-                        );
-                    }
-                    child = BtreePager::get_internal_node_right_child(node);
-                    self.print_tree(child, indentation_level + 1);
-                }
-            }
         }
     }
 

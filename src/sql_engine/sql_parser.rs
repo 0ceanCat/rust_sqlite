@@ -546,9 +546,6 @@ impl<'a> ValueParser<'a> {
                         "An array must contain only primitive values. But array detected.",
                     ))
                 }
-                Value::SelectStmt(_) => return Err(String::from(
-                    "An array must contain only primitive values. But select statement detected.",
-                )),
                 _ => {}
             }
 

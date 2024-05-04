@@ -451,11 +451,6 @@ impl FieldDefinition {
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
-pub(crate) struct IndexCreationStmt {
-    field: String,
-}
-
-#[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct OrderByCluster {
     pub(crate) order_by_exprs: Vec<OrderByExpr>,
 }
@@ -567,17 +562,6 @@ impl LogicalOperator {
             LogicalOperator::AND => b1 & b2,
         }
     }
-
-    pub fn is_and(&self) -> bool {
-        match self {
-            LogicalOperator::OR => false,
-            LogicalOperator::AND => true,
-        }
-    }
-
-    pub fn is_or(&self) -> bool {
-        !self.is_and()
-    }
 }
 
 impl TryFrom<&str> for LogicalOperator {
@@ -636,7 +620,6 @@ pub enum Value {
     BOOLEAN(bool),
     STRING(String),
     ARRAY(Vec<Value>),
-    SelectStmt(SelectStmt),
 }
 
 impl PartialEq for Value {
@@ -647,7 +630,6 @@ impl PartialEq for Value {
             Value::BOOLEAN(b) => *b == other.unwrap_into_bool().unwrap(),
             Value::STRING(s) => s == other.unwrap_as_string().unwrap(),
             Value::ARRAY(a) => a == other.unwrap_as_array().unwrap(),
-            Value::SelectStmt(_) => other.is_select_stmt(),
         }
     }
 }
@@ -660,7 +642,6 @@ impl PartialOrd for Value {
             Value::BOOLEAN(b) => b.partial_cmp(&other.unwrap_into_bool().unwrap()),
             Value::STRING(s) => s.partial_cmp(&other.unwrap_as_string().unwrap()),
             Value::ARRAY(_) => None,
-            Value::SelectStmt(_) => None,
         }
     }
 }
@@ -673,7 +654,6 @@ impl Value {
             (Value::STRING(_), Value::STRING(_)) => true,
             (Value::ARRAY(_), Value::ARRAY(_)) => true,
             (Value::BOOLEAN(_), Value::BOOLEAN(_)) => true,
-            (Value::SelectStmt(_), Value::SelectStmt(_)) => true,
             _ => false,
         }
     }
@@ -710,13 +690,6 @@ impl Value {
         match self {
             Value::BOOLEAN(v) => Ok(*v),
             _ => Err("Current Value is not a Boolean."),
-        }
-    }
-
-    pub fn is_select_stmt(&self) -> bool {
-        match self {
-            Value::SelectStmt(_) => true,
-            _ => false,
         }
     }
 
@@ -788,7 +761,6 @@ impl Value {
                 s.push(']');
                 s
             }
-            Value::SelectStmt(_) => String::new(),
         }
     }
 }

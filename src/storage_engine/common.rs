@@ -326,7 +326,6 @@ impl<'a> RowToInsert<'a> {
                         copy_nonoverlapping(s.as_ptr(), buf.add(field_meta.offset), s.len());
                     }
                     Value::ARRAY(_) => {}
-                    Value::SelectStmt(_) => {}
                 }
             }
         }
