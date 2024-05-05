@@ -16,14 +16,19 @@ use crate::storage_engine::tables::{BtreeTable, SequentialTable, Table};
 use crate::utils::utils::{copy, copy_nonoverlapping, list_files_of_folder, u8_array_to_string};
 
 pub struct TableManager {
-    tables: HashMap<String, (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>)>,
+    tables: HashMap<String, (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>)>
 }
 
 impl TableManager {
     pub fn new() -> TableManager {
         TableManager {
-            tables: HashMap::new(),
+            tables: HashMap::new()
         }
+    }
+
+    pub fn find_index_for_field(&self, table_name: &str, field: &str) -> Option<&Box<dyn Table>> {
+        let tables = self.tables.get(table_name).unwrap();
+        tables.1.iter().find(|t| t.as_any().downcast_ref::<BtreeTable>().unwrap().key_field_name == field)
     }
 
     pub fn register_new_table(

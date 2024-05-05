@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::slice::Iter;
 
 use crate::build_path;
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
@@ -47,36 +48,30 @@ impl SelectStmt {
         &'a mut self,
         table_manager: &'a mut TableManager,
     ) -> Result<SelectResult, String> {
-        let table = table_manager.get_tables(&self.table)?.iter_mut().next();
-        if table.is_none() {
+        let table = table_manager.get_tables(&self.table);
+        if table.is_err() {
             return Err(format!("Table {} does not exist.", self.table));
         }
 
-        let table = table.unwrap();
-
-        let result = self.execute_where(table);
+        let result = self.execute_where(table_manager);
 
         let table_meta = table_manager.get_table_metadata(&self.table)?;
 
         let selected_fields: Vec<&str> =
             if self.selected_fields.len() == 1 && self.selected_fields.first().unwrap() == "*" {
-                table_meta
-                    .fields
-                    .iter()
-                    .map(|v| v.data_def.field_name.as_str())
-                    .collect()
+                table_meta.fields
+                          .iter()
+                          .map(|v| v.data_def.field_name.as_str())
+                          .collect()
             } else {
                 self.selected_fields.iter().map(|x| x.as_str()).collect()
             };
 
-        let order_by_exprs = self
-            .order_by_expr
-            .take()
-            .unwrap_or_else(|| OrderByCluster::new(vec![]))
-            .order_by_exprs;
+        let order_by_exprs = self.order_by_expr.take()
+                                 .unwrap_or_else(|| OrderByCluster::new(vec![]))
+                                 .order_by_exprs;
 
-        let projected_results =
-            self.order_by(order_by_exprs, &result, table_meta, &selected_fields)?;
+        let projected_results = self.order_by(order_by_exprs, &result, table_meta, &selected_fields)?;
 
         let human_readable_results = projected_results.into_iter().map(|(v, _)| v).collect();
 
@@ -173,10 +168,17 @@ impl SelectStmt {
         Ok(projected_results)
     }
 
-    fn execute_where(&mut self, table: &mut Box<dyn Table>) -> Vec<RowBytes> {
+    fn execute_where(&mut self, table_manager: &mut TableManager) -> Vec<RowBytes> {
         match &self.where_expr {
-            None => table.get_all(),
-            Some(w) => w.execute(table),
+            None => table_manager.get_tables(&self.table)
+                                 .unwrap()
+                                 .iter()
+                                 .next()
+                                 .unwrap()
+                                 .get_all(),
+            Some(w) => {
+                w.execute(&self.table, table_manager)
+            }
         }
     }
 }
@@ -200,17 +202,15 @@ impl InsertStmt {
     pub fn execute(&mut self, table_manager: &mut TableManager) -> Result<(), String> {
         let meta = table_manager.get_table_metadata(&self.table)?;
         if self.fields.len() == 1 && self.fields.first().unwrap() == "*" {
-            self.fields = meta
-                .fields
-                .iter()
-                .map(|f| f.data_def.field_name.to_string())
-                .collect();
+            self.fields = meta.fields
+                              .iter()
+                              .map(|f| f.data_def.field_name.to_string())
+                              .collect();
         } else {
-            match self
-                .fields
-                .iter()
-                .filter(|f| meta.get_field_metadata(f).is_err())
-                .next()
+            match self.fields
+                      .iter()
+                      .filter(|f| meta.get_field_metadata(f).is_err())
+                      .next()
             {
                 None => {}
                 Some(field) => {
@@ -248,8 +248,32 @@ impl WhereExpr {
         }
     }
 
-    fn execute(&self, table: &mut Box<dyn Table>) -> Vec<RowBytes> {
-        table.find_by_condition_clusters(&self.condition_cluster)
+    fn execute(&self, table_name: &str, table_manager: &mut TableManager) -> Vec<RowBytes> {
+        let mut full_scan_conditions = vec![];
+        let mut index_scan_conditions = vec![];
+
+        for (op, cluster) in &self.condition_cluster {
+            if cluster.iter().any(|c| table_manager.find_index_for_field(table_name, &c.field).is_some()) {
+                index_scan_conditions.push((op, cluster));
+            } else {
+                full_scan_conditions.push((op, cluster));
+            }
+        }
+
+        if index_scan_conditions.is_empty() {
+            let table = table_manager.get_tables(table_name).unwrap().first_mut().unwrap();
+            return table.find_by_condition_clusters(&self.condition_cluster);
+        }
+
+        let result = vec![];
+
+        for (op, cluster) in index_scan_conditions {
+            for x in cluster.iter() {
+
+            }
+        }
+
+        result
     }
 }
 
@@ -481,6 +505,10 @@ pub(crate) struct ConditionCluster {
 impl ConditionCluster {
     pub(crate) fn new(conditions: Vec<ConditionExpr>) -> ConditionCluster {
         ConditionCluster { conditions }
+    }
+
+    pub fn iter(&self) -> Iter<ConditionExpr> {
+        self.conditions.iter()
     }
 }
 

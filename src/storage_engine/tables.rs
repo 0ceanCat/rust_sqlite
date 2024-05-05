@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::PathBuf;
@@ -15,10 +16,10 @@ use crate::storage_engine::enums::NodeType;
 use crate::storage_engine::pagers::{BtreePager, SequentialPager};
 use crate::utils::utils::{copy, copy_nonoverlapping, u8_array_to_string};
 
-pub trait Table {
+pub trait Table{
     fn begin(&mut self) -> WriteReadCursor;
     fn insert(&mut self, row: &RowToInsert) -> Result<(), String>;
-    fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes>;
+    fn find_by_condition_cluster(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes>;
     fn find_by_condition_clusters(
         &mut self,
         condition_clusters: &Vec<(LogicalOperator, ConditionCluster)>,
@@ -33,6 +34,7 @@ pub trait Table {
     fn get_row_value_mut(&mut self, page_index: usize, cell_index: usize) -> *mut u8;
     fn flush_to_disk(&mut self);
     fn print_tree(&self, page_index: usize, cell_index: usize);
+    fn as_any(&self) -> &dyn Any;
 }
 
 pub struct BtreeMeta {
@@ -85,12 +87,11 @@ impl Table for BtreeTable {
         Ok(())
     }
 
-    fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes> {
-        let field_size = self
-            .table_metadata
-            .get_field_metadata(&condition_expr.field)
-            .unwrap()
-            .size;
+    fn find_by_condition_cluster(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes> {
+        let field_size = self.table_metadata
+                             .get_field_metadata(&condition_expr.field)
+                             .unwrap()
+                             .size;
 
         if condition_expr.field == self.key_field_name
             && condition_expr.operator != Operator::EQUALS(false)
@@ -116,39 +117,35 @@ impl Table for BtreeTable {
             usize,
         )>::with_capacity(condition_clusters.len());
 
-        condition_clusters
-            .iter()
-            .for_each(|(logical_op, condition_cluster)| {
-                let and_conditions: Vec<&ConditionExpr> = condition_cluster
-                    .conditions
-                    .iter()
-                    .filter(|c| c.logical_operator == LogicalOperator::AND)
-                    .collect();
+        condition_clusters.iter()
+                          .for_each(|(logical_op, condition_cluster)| {
+                              let and_conditions: Vec<&ConditionExpr> = condition_cluster.conditions
+                                                                                         .iter()
+                                                                                         .filter(|c| c.logical_operator == LogicalOperator::AND)
+                                                                                         .collect();
 
-                let or_conditions: Vec<&ConditionExpr> = condition_cluster
-                    .conditions
-                    .iter()
-                    .filter(|c| c.logical_operator == LogicalOperator::OR)
-                    .collect();
+                              let or_conditions: Vec<&ConditionExpr> = condition_cluster.conditions
+                                                                                        .iter()
+                                                                                        .filter(|c| c.logical_operator == LogicalOperator::OR)
+                                                                                        .collect();
 
-                let max_size_field = condition_cluster
-                    .conditions
-                    .iter()
-                    .map(|c| {
-                        self.table_metadata
-                            .get_field_metadata(&c.field)
-                            .unwrap()
-                            .size
-                    })
-                    .max()
-                    .unwrap();
-                cluster_conditions.push((
-                    logical_op,
-                    and_conditions,
-                    or_conditions,
-                    max_size_field,
-                ));
-            });
+                              let max_size_field = condition_cluster.conditions
+                                                                    .iter()
+                                                                    .map(|c| {
+                                                                        self.table_metadata
+                                                                            .get_field_metadata(&c.field)
+                                                                            .unwrap()
+                                                                            .size
+                                                                    })
+                                                                    .max()
+                                                                    .unwrap();
+                              cluster_conditions.push((
+                                  logical_op,
+                                  and_conditions,
+                                  or_conditions,
+                                  max_size_field,
+                              ));
+                          });
 
         let global_max_field_size = cluster_conditions
             .iter()
@@ -258,6 +255,10 @@ impl Table for BtreeTable {
     fn print_tree(&self, page_index: usize, cell_index: usize) {
         println!("{}", page_index);
         println!("{}", cell_index);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -982,17 +983,17 @@ impl Table for SequentialTable {
         Ok(())
     }
 
-    fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes> {
-        let field_size = self
-            .table_metadata
-            .get_field_metadata(&condition_expr.field)
-            .unwrap()
-            .size;
+    fn find_by_condition_cluster(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes> {
+        let field_max_size = self.table_metadata
+                                 .get_field_metadata(&condition_expr.field)
+                                 .unwrap()
+                                 .size;
+
         let row_size = self.table_metadata.row_size;
         let mut cursor = ReadCursor::at(self, 0, 0);
         let mut result = Vec::new();
 
-        let mut buf = Vec::<u8>::with_capacity(field_size);
+        let mut buf = Vec::<u8>::with_capacity(field_max_size);
 
         unsafe {
             while !cursor.is_end() {
@@ -1173,5 +1174,9 @@ impl Table for SequentialTable {
     fn print_tree(&self, page_index: usize, cell_index: usize) {
         println!("{}", page_index);
         println!("{}", cell_index);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
