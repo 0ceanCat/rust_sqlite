@@ -1,5 +1,5 @@
 use std::{fs, ptr};
-use std::cmp::{Ordering, PartialEq, PartialOrd};
+use std::cmp::{max, Ordering, PartialEq, PartialOrd};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -238,21 +238,22 @@ impl InsertStmt {
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct WhereExpr {
-    condition_cluster: Vec<(LogicalOperator, ConditionCluster)>,
+    condition_cluster: Vec<ConditionCluster>,
 }
 
 impl WhereExpr {
-    pub(crate) fn new(condition_exprs: Vec<(LogicalOperator, ConditionCluster)>) -> WhereExpr {
+    pub(crate) fn new(condition_exprs: Vec<ConditionCluster>) -> WhereExpr {
         WhereExpr {
             condition_cluster: condition_exprs,
         }
     }
 
     fn execute(&self, table_name: &str, table_manager: &mut TableManager) -> Vec<RowBytes> {
-        let mut full_scan_conditions = vec![];
+        /*let mut full_scan_conditions = vec![];
         let mut index_scan_conditions = vec![];
 
-        for (op, cluster) in &self.condition_cluster {
+        for cluster in &self.condition_cluster {
+            let op = cluster.logical_operator;
             if cluster.iter().any(|c| table_manager.find_index_for_field(table_name, &c.field).is_some()) {
                 index_scan_conditions.push((op, cluster));
             } else {
@@ -260,20 +261,41 @@ impl WhereExpr {
             }
         }
 
+        let default_table = table_manager.get_tables(table_name).unwrap().first_mut().unwrap();
+
         if index_scan_conditions.is_empty() {
-            let table = table_manager.get_tables(table_name).unwrap().first_mut().unwrap();
-            return table.find_by_condition_clusters(&self.condition_cluster);
+            return default_table.find_by_condition_clusters(&self.condition_cluster);
         }
 
-        let result = vec![];
+       let result = vec![];
 
-        for (op, cluster) in index_scan_conditions {
-            for x in cluster.iter() {
+       for (op, cluster) in index_scan_conditions {
+           let mut cluster_result: Vec<RowBytes>;
+           let mut begin = true;
 
-            }
-        }
+           for expr in cluster.iter() {
+               if begin {
+                   cluster_result = if let Some(index) = table_manager.find_index_for_field(table_name, &expr.field) {
+                       index.find_by_condition_expr(expr)
+                   } else {
+                       default_table.find_by_condition_expr(expr)
+                   };
+                   begin = false;
+               } else {
+                   if expr.logical_operator == LogicalOperator::AND {
 
-        result
+                   }
+               }
+           }
+       }
+
+       result*/
+        let table = table_manager.get_tables(table_name).unwrap().iter_mut().next().unwrap();
+        table.find_by_condition_clusters(&self.condition_cluster)
+    }
+
+    fn examine_rows(expr: &ConditionExpr) -> Vec<RowBytes> {
+        vec![]
     }
 }
 
@@ -498,16 +520,40 @@ impl OrderByExpr {
 }
 
 #[derive(PartialEq, Debug, PartialOrd)]
+pub enum Condition {
+    Cluster(ConditionCluster),
+    Expr(ConditionExpr)
+}
+
+impl Condition {
+    pub fn get_field_max_size(&self, table_meta: &TableStructureMetadata) -> usize{
+        let mut max_size: usize = 0;
+        match self {
+            Condition::Cluster(cluster) => {
+                for condition in cluster.iter() {
+                    max_size = max(max_size, condition.get_field_max_size(table_meta));
+                }
+            }
+            Condition::Expr(e) => {
+                max_size = max(max_size, table_meta.get_field_metadata(&e.field).unwrap().size);
+            }
+        }
+        max_size
+    }
+}
+
+#[derive(PartialEq, Debug, PartialOrd)]
 pub(crate) struct ConditionCluster {
-    pub conditions: Vec<ConditionExpr>,
+    pub logical_operator: LogicalOperator,
+    pub conditions: Vec<Condition>,
 }
 
 impl ConditionCluster {
-    pub(crate) fn new(conditions: Vec<ConditionExpr>) -> ConditionCluster {
-        ConditionCluster { conditions }
+    pub(crate) fn new(logical_operator: LogicalOperator, conditions: Vec<Condition>) -> ConditionCluster {
+        ConditionCluster { logical_operator, conditions }
     }
 
-    pub fn iter(&self) -> Iter<ConditionExpr> {
+    pub fn iter(&self) -> Iter<Condition> {
         self.conditions.iter()
     }
 }

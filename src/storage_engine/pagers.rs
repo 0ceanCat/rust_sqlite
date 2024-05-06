@@ -19,14 +19,16 @@ pub struct AbstractPager {
     pages: Box<[Option<Page>; TABLE_MAX_PAGES]>,
     total_pages: usize,
     fd: File,
+    header_size: usize
 }
 
 impl AbstractPager {
-    pub(crate) fn new(total_pages: usize, file: File) -> AbstractPager {
+    pub(crate) fn new(total_pages: usize, file: File, header_size: usize) -> AbstractPager {
         AbstractPager {
             pages: Box::new([None; TABLE_MAX_PAGES]),
             total_pages,
             fd: file,
+            header_size
         }
     }
 }
@@ -41,7 +43,7 @@ impl AbstractPager {
         self.fd
             .seek_read(
                 &mut bytes,
-                (page_index * PAGE_SIZE + BTREE_METADATA_SIZE) as u64,
+                (page_index * PAGE_SIZE + self.header_size) as u64,
             )
             .unwrap();
         bytes
@@ -56,7 +58,7 @@ impl AbstractPager {
 
         self.fd
             .seek(SeekFrom::Start(
-                (page_index * PAGE_SIZE + BTREE_METADATA_SIZE) as u64,
+                (page_index * PAGE_SIZE + self.header_size) as u64,
             ))
             .unwrap();
         self.fd.write(page.unwrap()).unwrap();
@@ -113,7 +115,7 @@ impl BtreePager {
         }
         let total_pages = size / PAGE_SIZE;
         BtreePager {
-            abstract_pager: AbstractPager::new(total_pages, file),
+            abstract_pager: AbstractPager::new(total_pages, file, BTREE_METADATA_SIZE),
             updated: [false; TABLE_MAX_PAGES],
             size,
             btree_leaf_node_body_layout: BtreeLeafNodeBodyLayout::new(key_size, row_size),
@@ -549,7 +551,7 @@ impl SequentialPager {
         }
         let total_pages = size / PAGE_SIZE;
         SequentialPager {
-            abstract_pager: AbstractPager::new(total_pages, file),
+            abstract_pager: AbstractPager::new(total_pages, file, SEQUENTIAL_NODE_HEADER_SIZE),
         }
     }
 

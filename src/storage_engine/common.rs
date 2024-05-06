@@ -376,6 +376,7 @@ pub struct TableStructureMetadata {
     pub row_size: usize,
     pub fields_meta_map: HashMap<String, (u32, Rc<FieldMetadata>)>,
     pub fields: Vec<Rc<FieldMetadata>>,
+    pub fields_max_size: usize
 }
 
 impl TableStructureMetadata {
@@ -389,10 +390,12 @@ impl TableStructureMetadata {
             .reduce(|a, b| a + b)
             .unwrap();
 
-        let fields = fields_metadata
-            .iter()
-            .map(|(_, _, m)| Rc::clone(m))
-            .collect();
+        let fields:Vec<Rc<FieldMetadata>> = fields_metadata
+                                                .iter()
+                                                .map(|(_, _, m)| Rc::clone(m))
+                                                .collect();
+
+        let fields_max_size = fields.iter().map(|f| f.size).max().unwrap();
 
         let fields_meta_map: HashMap<String, (u32, Rc<FieldMetadata>)> = fields_metadata
             .into_iter()
@@ -403,6 +406,7 @@ impl TableStructureMetadata {
             row_size,
             fields_meta_map,
             fields,
+            fields_max_size
         }
     }
 
