@@ -193,7 +193,6 @@ impl BtreeTable {
         table_metadata: Rc<TableStructureMetadata>,
     ) -> Result<BtreeTable, String> {
         match OpenOptions::new()
-            .create(true)
             .read(true)
             .write(true)
             .open(path)
@@ -801,7 +800,10 @@ impl SequentialTable {
         path: &PathBuf,
         table_metadata: Rc<TableStructureMetadata>,
     ) -> Result<SequentialTable, String> {
-        match File::open(path) {
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path) {
             Ok(file) => {
                 let pager = SequentialPager::open(file);
                 Ok(SequentialTable {
