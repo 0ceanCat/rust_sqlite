@@ -413,7 +413,7 @@ impl TableStructureMetadata {
     pub fn get_field_metadata(&self, field_name: &str) -> Result<&FieldMetadata, String> {
         match self.fields_meta_map.get(field_name) {
             None => Err(format!(
-                "Field {} does not found in the table {}!",
+                "Field `{}` does not found in the table `{}`!",
                 field_name, self.table_name
             )),
             Some((_, fm)) => Ok(fm),

@@ -12,7 +12,6 @@ use crate::storage_engine::common::{
     RowBytes, RowToInsert, RowValues, SelectResult, TableManager, TableStructureMetadata,
 };
 use crate::storage_engine::config::*;
-use crate::storage_engine::tables::Table;
 use crate::utils::utils::{copy_nonoverlapping, ToU8, u8_array_to_string};
 
 pub(crate) enum SqlStmt {
@@ -50,7 +49,7 @@ impl SelectStmt {
     ) -> Result<SelectResult, String> {
         let table = table_manager.get_tables(&self.table);
         if table.is_err() {
-            return Err(format!("Table {} does not exist.", self.table));
+            return Err(format!("Table `{}` does not exist.", self.table));
         }
 
         let result = self.execute_where(table_manager);
@@ -172,8 +171,7 @@ impl SelectStmt {
         match &self.where_expr {
             None => table_manager.get_tables(&self.table)
                                  .unwrap()
-                                 .iter()
-                                 .next()
+                                 .first()
                                  .unwrap()
                                  .get_all(),
             Some(w) => {
@@ -249,49 +247,22 @@ impl WhereExpr {
     }
 
     fn execute(&self, table_name: &str, table_manager: &mut TableManager) -> Vec<RowBytes> {
-        /*let mut full_scan_conditions = vec![];
-        let mut index_scan_conditions = vec![];
+        let mut index_scan = false;
 
         for cluster in &self.condition_cluster {
-            let op = cluster.logical_operator;
-            if cluster.iter().any(|c| table_manager.find_index_for_field(table_name, &c.field).is_some()) {
-                index_scan_conditions.push((op, cluster));
-            } else {
-                full_scan_conditions.push((op, cluster));
+            if cluster.iter().any(|c| c.has_indexed_field(table_name, table_manager)) {
+                index_scan = true;
+                break;
             }
         }
 
-        let default_table = table_manager.get_tables(table_name).unwrap().first_mut().unwrap();
+        if index_scan {
 
-        if index_scan_conditions.is_empty() {
-            return default_table.find_by_condition_clusters(&self.condition_cluster);
+        } else {
+            // full scan
+            let table = table_manager.get_tables(table_name).unwrap().first_mut().unwrap();
+            table.find_by_condition_clusters(&self.condition_cluster)
         }
-
-       let result = vec![];
-
-       for (op, cluster) in index_scan_conditions {
-           let mut cluster_result: Vec<RowBytes>;
-           let mut begin = true;
-
-           for expr in cluster.iter() {
-               if begin {
-                   cluster_result = if let Some(index) = table_manager.find_index_for_field(table_name, &expr.field) {
-                       index.find_by_condition_expr(expr)
-                   } else {
-                       default_table.find_by_condition_expr(expr)
-                   };
-                   begin = false;
-               } else {
-                   if expr.logical_operator == LogicalOperator::AND {
-
-                   }
-               }
-           }
-       }
-
-       result*/
-        let table = table_manager.get_tables(table_name).unwrap().iter_mut().next().unwrap();
-        table.find_by_condition_clusters(&self.condition_cluster)
     }
 
     fn examine_rows(expr: &ConditionExpr) -> Vec<RowBytes> {
@@ -539,6 +510,24 @@ impl Condition {
             }
         }
         max_size
+    }
+
+    pub fn has_indexed_field(&self, table_name: &str, table_manager: &TableManager) -> bool {
+        let mut has_indexed: bool = false;
+        match self {
+            Condition::Cluster(cluster) => {
+                for condition in cluster.iter() {
+                    has_indexed |= condition.has_indexed_field(table_name, table_manager);
+                    if has_indexed {
+                        break;
+                    }
+                }
+            }
+            Condition::Expr(e) => {
+                has_indexed = table_manager.find_index_for_field(table_name, &e.field).is_some();
+            }
+        }
+        has_indexed
     }
 }
 
