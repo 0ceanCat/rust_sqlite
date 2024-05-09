@@ -19,8 +19,12 @@ pub trait Table{
     fn begin(&mut self) -> WriteReadCursor;
     fn insert(&mut self, row: &RowToInsert) -> Result<(), String>;
     fn find_by_condition_clusters(
-        &mut self,
+        &self,
         condition_clusters: &Vec<ConditionCluster>,
+    ) -> Vec<RowBytes>;
+    fn find_by_condition_clusters_ref(
+        &self,
+        condition_clusters: Vec<&ConditionCluster>,
     ) -> Vec<RowBytes>;
     fn end(&mut self) -> WriteReadCursor;
     fn is_btree(&self) -> bool;
@@ -86,11 +90,15 @@ impl Table for BtreeTable {
     }
 
     fn find_by_condition_clusters(
-        &mut self,
+        &self,
         condition_clusters: &Vec<ConditionCluster>,
     ) -> Vec<RowBytes> {
+        self.find_by_condition_clusters_ref(condition_clusters.iter().collect())
+    }
+
+    fn find_by_condition_clusters_ref(&self, condition_clusters: Vec<&ConditionCluster>) -> Vec<RowBytes> {
         let row_size = self.table_metadata.row_size;
-        let mut cursor = ReadCursor::at(self, 0, 0);
+        let mut cursor = self.find_smallest_or_biggest_key(false);
         let mut result = Vec::new();
         let mut global_max_field_size: usize = 0;
 
@@ -101,14 +109,26 @@ impl Table for BtreeTable {
                               }
                           });
 
-
         let mut field_buf = Vec::<u8>::with_capacity(global_max_field_size);
+
+        for cluster in condition_clusters.iter() {
+            cluster.iter().for_each(|c| {
+
+            });
+            if cluster.logical_operator == LogicalOperator::OR {
+                let result = table.find_by_condition_clusters_ref(vec![cluster]);
+                global_result.extend(result.into_iter());
+            } else {
+
+            }
+        };
+
 
         unsafe {
             while !cursor.is_end() {
                 let row_ptr = cursor.cursor_value();
                 let mut matched: Option<bool> = None;
-                for cluster in condition_clusters {
+                for cluster in &condition_clusters {
                     let compare_result = self.read_compare_value(row_ptr, &mut field_buf, cluster);
                     if matched.is_none() {
                         matched = Some(compare_result);
@@ -403,14 +423,17 @@ impl BtreeTable {
         }
     }
 
-    pub(crate) fn find_smallest_or_biggest_key(&mut self, biggest: bool) -> WriteReadCursor {
-        let node_type = self.pager.get_node_type_by_index(self.root_page_index);
-        match node_type {
-            NodeType::Internal => {
-                self.internal_node_find_smallest_or_biggest(self.root_page_index, biggest)
-            }
-            NodeType::Leaf => {
-                self.leaf_node_find_smallest_or_biggest(self.root_page_index, biggest)
+    pub(crate) fn find_smallest_or_biggest_key(&self, biggest: bool) -> WriteReadCursor {
+        unsafe {
+            let s_ptr: &mut Self = std::mem::transmute(self as *const Self);
+            let node_type = (*s_ptr).pager.get_node_type_by_index(self.root_page_index);
+            match node_type {
+                NodeType::Internal => {
+                    (*s_ptr).internal_node_find_smallest_or_biggest(self.root_page_index, biggest)
+                }
+                NodeType::Leaf => {
+                    (*s_ptr).leaf_node_find_smallest_or_biggest(self.root_page_index, biggest)
+                }
             }
         }
     }
@@ -896,9 +919,13 @@ impl Table for SequentialTable {
     }
 
     fn find_by_condition_clusters(
-        &mut self,
+        &self,
         condition_clusters: &Vec<ConditionCluster>,
     ) -> Vec<RowBytes> {
+        self.find_by_condition_clusters_ref(condition_clusters.iter().collect())
+    }
+
+    fn find_by_condition_clusters_ref(&self, condition_clusters: Vec<&ConditionCluster>) -> Vec<RowBytes> {
         let row_size = self.table_metadata.row_size;
         let mut cursor = ReadCursor::at(self, 0, 0);
         let mut result = Vec::new();
@@ -918,7 +945,7 @@ impl Table for SequentialTable {
             while !cursor.is_end() {
                 let row_ptr = cursor.cursor_value();
                 let mut matched: Option<bool> = None;
-                for cluster in condition_clusters {
+                for cluster in &condition_clusters {
                     let compare_result = self.read_compare_value(row_ptr, &mut field_buf, cluster);
                     if matched.is_none() {
                         matched = Some(compare_result);

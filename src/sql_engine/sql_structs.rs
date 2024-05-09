@@ -12,6 +12,7 @@ use crate::storage_engine::common::{
     RowBytes, RowToInsert, RowValues, SelectResult, TableManager, TableStructureMetadata,
 };
 use crate::storage_engine::config::*;
+use crate::storage_engine::tables::Table;
 use crate::utils::utils::{copy_nonoverlapping, ToU8, u8_array_to_string};
 
 pub(crate) enum SqlStmt {
@@ -168,13 +169,13 @@ impl SelectStmt {
     }
 
     fn execute_where(&mut self, table_manager: &mut TableManager) -> Vec<RowBytes> {
-        match &self.where_expr {
+        match &mut self.where_expr {
             None => table_manager.get_tables(&self.table)
                                  .unwrap()
                                  .first()
                                  .unwrap()
                                  .get_all(),
-            Some(w) => {
+            Some(ref mut w) => {
                 w.execute(&self.table, table_manager)
             }
         }
@@ -246,22 +247,43 @@ impl WhereExpr {
         }
     }
 
-    fn execute(&self, table_name: &str, table_manager: &mut TableManager) -> Vec<RowBytes> {
+    fn execute(&mut self, table_name: &str, table_manager: &mut TableManager) -> Vec<RowBytes> {
         let mut index_scan = false;
+        self.condition_cluster.sort_by(|c1, c2|{
+            let indexed1 = c1.iter()
+                             .any(|c| c.find_index(table_name, table_manager).is_some()).to_u8();
 
-        for cluster in &self.condition_cluster {
-            if cluster.iter().any(|c| c.has_indexed_field(table_name, table_manager)) {
-                index_scan = true;
-                break;
-            }
-        }
+            let indexed2 = c2.iter()
+                             .any(|c| c.find_index(table_name, table_manager).is_some()).to_u8();
+            index_scan = (indexed1 | indexed2) == 1;
+            indexed1.cmp(&indexed2)
+        } );
 
         if index_scan {
+            let mut global_result = vec![];
 
+            for cluster in self.condition_cluster.iter() {
+                let table = match cluster.iter().filter_map(|c| c.find_index(table_name, table_manager)).next() {
+                    None => {
+                        table_manager.get_tables(table_name).unwrap().first_mut().unwrap()
+                    }
+                    Some(mut index) => {
+                        index
+                    }
+                };
+
+                if cluster.logical_operator == LogicalOperator::OR {
+                    let result = table.find_by_condition_clusters_ref(vec![cluster]);
+                    global_result.extend(result.into_iter());
+                } else {
+
+                }
+            };
+
+            global_result
         } else {
             // full scan
-            let table = table_manager.get_tables(table_name).unwrap().first_mut().unwrap();
-            table.find_by_condition_clusters(&self.condition_cluster)
+            table_manager.get_tables(table_name).unwrap().first_mut().unwrap().find_by_condition_clusters(&self.condition_cluster)
         }
     }
 
@@ -490,7 +512,7 @@ impl OrderByExpr {
     }
 }
 
-#[derive(PartialEq, Debug, PartialOrd)]
+#[derive(PartialEq, Debug, PartialOrd, Clone)]
 pub enum Condition {
     Cluster(ConditionCluster),
     Expr(ConditionExpr)
@@ -512,26 +534,26 @@ impl Condition {
         max_size
     }
 
-    pub fn has_indexed_field(&self, table_name: &str, table_manager: &TableManager) -> bool {
-        let mut has_indexed: bool = false;
+    pub fn find_index<'a>(&'a self, table_name: &str, table_manager: &'a TableManager) -> Option<&Box<dyn Table>> {
+        let mut has_indexed: Option<&Box<dyn Table>> = None;
         match self {
             Condition::Cluster(cluster) => {
                 for condition in cluster.iter() {
-                    has_indexed |= condition.has_indexed_field(table_name, table_manager);
-                    if has_indexed {
+                    has_indexed = condition.find_index(table_name, table_manager);
+                    if has_indexed.is_some() {
                         break;
                     }
                 }
             }
             Condition::Expr(e) => {
-                has_indexed = table_manager.find_index_for_field(table_name, &e.field).is_some();
+                has_indexed = table_manager.find_index_for_field(table_name, &e.field);
             }
         }
         has_indexed
     }
 }
 
-#[derive(PartialEq, Debug, PartialOrd)]
+#[derive(PartialEq, Debug, PartialOrd, Clone)]
 pub(crate) struct ConditionCluster {
     pub logical_operator: LogicalOperator,
     pub conditions: Vec<Condition>,
@@ -547,7 +569,7 @@ impl ConditionCluster {
     }
 }
 
-#[derive(PartialEq, Debug, PartialOrd)]
+#[derive(PartialEq, Debug, PartialOrd, Clone)]
 pub(crate) struct ConditionExpr {
     pub logical_operator: LogicalOperator,
     pub field: String,
@@ -602,7 +624,7 @@ impl TryFrom<&str> for Order {
     }
 }
 
-#[derive(PartialEq, PartialOrd, Debug)]
+#[derive(PartialEq, PartialOrd, Debug, Clone)]
 pub(crate) enum Operator {
     EQUALS(bool),
     GT,
@@ -676,7 +698,7 @@ impl TryFrom<String> for Operator {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Value {
     INTEGER(i32),
     FLOAT(f32),
