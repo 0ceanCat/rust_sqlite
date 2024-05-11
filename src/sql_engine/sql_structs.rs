@@ -1,5 +1,6 @@
 use std::{fs, ptr};
 use std::cmp::{max, Ordering, PartialEq, PartialOrd};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -256,7 +257,7 @@ impl WhereExpr {
             let indexed2 = c2.iter()
                              .any(|c| c.find_index(table_name, table_manager).is_some()).to_u8();
             index_scan = (indexed1 | indexed2) == 1;
-            indexed1.cmp(&indexed2)
+            indexed2.cmp(&indexed1)
         } );
 
         if index_scan {
@@ -272,11 +273,17 @@ impl WhereExpr {
                     }
                 };
 
+                let local_result = table.find_by_condition_clusters_ref(vec![cluster]);
                 if cluster.logical_operator == LogicalOperator::OR {
-                    let result = table.find_by_condition_clusters_ref(vec![cluster]);
-                    global_result.extend(result.into_iter());
+                    global_result.extend(local_result.into_iter());
                 } else {
-
+                    let set: HashSet<RowBytes> = HashSet::from_iter(global_result.into_iter());
+                    global_result = vec![];
+                    for r in local_result {
+                        if set.contains(&r) {
+                            global_result.push(r);
+                        }
+                    }
                 }
             };
 
@@ -285,10 +292,6 @@ impl WhereExpr {
             // full scan
             table_manager.get_tables(table_name).unwrap().first_mut().unwrap().find_by_condition_clusters(&self.condition_cluster)
         }
-    }
-
-    fn examine_rows(expr: &ConditionExpr) -> Vec<RowBytes> {
-        vec![]
     }
 }
 
@@ -519,6 +522,29 @@ pub enum Condition {
 }
 
 impl Condition {
+    pub fn unwrap_as_expr(&self) -> Result<&ConditionExpr, String> {
+        match self {
+            Condition::Cluster(_) => {Err(String::from("The current condition is not an Expr!"))}
+            Condition::Expr(e) => {Ok(e)}
+        }
+    }
+
+    pub fn unwrap_as_cluster(&self) -> Result<&ConditionCluster, String> {
+        match self {
+            Condition::Cluster(c) => {Ok(c)}
+            Condition::Expr(_) => {Err(String::from("The current condition is not a Cluster!"))}
+        }
+    }
+
+    pub fn is_expr(&self) -> bool {
+        match self {
+            Condition::Cluster(_) => {false}
+            Condition::Expr(_) => {
+                true
+            }
+        }
+    }
+
     pub fn get_field_max_size(&self, table_meta: &TableStructureMetadata) -> usize{
         let mut max_size: usize = 0;
         match self {

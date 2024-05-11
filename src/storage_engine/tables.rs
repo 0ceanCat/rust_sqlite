@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::cmp::max;
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::PathBuf;
@@ -7,13 +8,13 @@ use std::ptr;
 use std::ptr::null_mut;
 use std::rc::Rc;
 
-use crate::sql_engine::sql_structs::{Condition, ConditionCluster, DataType, LogicalOperator, Value};
+use crate::sql_engine::sql_structs::{Condition, ConditionCluster, ConditionExpr, DataType, LogicalOperator, Value};
 use crate::storage_engine::common::{RowBytes, RowToInsert, TableStructureMetadata};
 use crate::storage_engine::config::*;
 use crate::storage_engine::cursor::{ReadCursor, WriteReadCursor};
 use crate::storage_engine::enums::NodeType;
 use crate::storage_engine::pagers::{BtreePager, SequentialPager};
-use crate::utils::utils::{copy, copy_nonoverlapping, u8_array_to_string};
+use crate::utils::utils::{copy, copy_nonoverlapping, ToU8, u8_array_to_string};
 
 pub trait Table{
     fn begin(&mut self) -> WriteReadCursor;
@@ -97,52 +98,57 @@ impl Table for BtreeTable {
     }
 
     fn find_by_condition_clusters_ref(&self, condition_clusters: Vec<&ConditionCluster>) -> Vec<RowBytes> {
-        let row_size = self.table_metadata.row_size;
-        let mut cursor = self.find_smallest_or_biggest_key(false);
         let mut result = Vec::new();
-        let mut global_max_field_size: usize = 0;
-
-        condition_clusters.iter()
-                          .for_each(|condition_cluster| {
-                              for condition in &condition_cluster.conditions {
-                                  global_max_field_size = max(global_max_field_size, condition.get_field_max_size(&self.table_metadata));
-                              }
-                          });
-
-        let mut field_buf = Vec::<u8>::with_capacity(global_max_field_size);
-
-        for cluster in condition_clusters.iter() {
-            cluster.iter().for_each(|c| {
-
-            });
-            if cluster.logical_operator == LogicalOperator::OR {
-                let result = table.find_by_condition_clusters_ref(vec![cluster]);
-                global_result.extend(result.into_iter());
-            } else {
-
-            }
-        };
-
-
         unsafe {
-            while !cursor.is_end() {
-                let row_ptr = cursor.cursor_value();
-                let mut matched: Option<bool> = None;
-                for cluster in &condition_clusters {
-                    let compare_result = self.read_compare_value(row_ptr, &mut field_buf, cluster);
-                    if matched.is_none() {
-                        matched = Some(compare_result);
+            for cluster in condition_clusters.iter() {
+                let mut and_exprs = vec![];
+                let mut or_clusters = vec![];
+                let mut local_result = vec![];
+                for condition in cluster.iter() {
+                    if cluster.logical_operator == LogicalOperator::AND && condition.is_expr(){
+                        and_exprs.push(condition.unwrap_as_expr().unwrap());
                     } else {
-                        matched = Some(cluster.logical_operator.operate(matched.unwrap(), compare_result));
+                        or_clusters.push(condition)
                     }
                 }
-                if let Some(true) = matched {
-                    result.push(RowBytes::deserialize_row(row_ptr, row_size));
-                }
-                cursor.cursor_advance();
-            }
-        }
 
+                if !and_exprs.is_empty() {
+                    local_result = self.find_by_condition_exprs(and_exprs);
+                }
+
+                for oc in or_clusters {
+                    if oc.is_expr() {
+                        local_result.extend(self.find_by_condition_exprs(vec![oc.unwrap_as_expr().unwrap()]));
+                    } else {
+                        let cluster = oc.unwrap_as_cluster().unwrap();
+                        let cluster_result = self.find_by_condition_clusters_ref(vec![cluster]);
+                        if cluster.logical_operator == LogicalOperator::OR {
+                            local_result.extend(cluster_result)
+                        } else {
+                            let mut set: HashSet<RowBytes> = HashSet::from_iter(local_result.into_iter());
+                            local_result = vec![];
+                            for r in cluster_result {
+                                if set.contains(&r) {
+                                    local_result.push(r);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if cluster.logical_operator == LogicalOperator::OR {
+                    result.extend(local_result);
+                } else {
+                    let mut set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
+                    result = vec![];
+                    for r in local_result {
+                        if set.contains(&r) {
+                            result.push(r);
+                        }
+                    }
+                }
+            };
+        }
         result
     }
 
@@ -245,6 +251,39 @@ impl BtreeTable {
                 table_metadata.table_name
             )),
         }
+    }
+
+    unsafe fn find_by_condition_exprs(&self, mut exprs: Vec<&ConditionExpr>) -> Vec<RowBytes> {
+        exprs.sort_by(|e1, e2| (e2.field == self.key_field_name).to_u8().cmp(&(e1.field == self.key_field_name).to_u8()));
+        let max_field_size = exprs.iter().map(|e| self.table_metadata.get_field_metadata(&e.field).unwrap().size).max().unwrap();
+        let mut buf = Vec::<u8>::with_capacity(max_field_size);
+        let mut result = vec![];
+
+        let mut cursor;
+
+        if exprs.first().unwrap().field == self.key_field_name {
+            cursor = self.table_find_by_key(&exprs.first().unwrap().value);
+        } else {
+            cursor = self.find_smallest_or_biggest_key(false);
+        }
+
+        while !cursor.is_end() {
+            let row_ptr = cursor.cursor_value();
+            let mut matched = false;
+            for expr in exprs.iter() {
+                matched &= self.read_compare_value(row_ptr, &mut buf, expr);
+                if !matched {
+                    break
+                }
+            }
+
+            if matched {
+                result.push(RowBytes::deserialize_row(row_ptr, self.row_size));
+            }
+        }
+
+
+        result
     }
 
     fn load_metadata(file: &mut File, table_name: &str) -> Result<BtreeMeta, String> {
@@ -771,43 +810,25 @@ impl BtreeTable {
         &self,
         row_ptr: *const u8,
         buf: &mut Vec<u8>,
-        cluster: &ConditionCluster,
+        condition_expr: &ConditionExpr,
     ) -> bool {
-        let mut matched: Option<bool> = None;
-        for condition in &cluster.conditions {
-            let logical_op: LogicalOperator;
-            let compare_result = match condition {
-                Condition::Cluster(c) => {
-                    logical_op = c.logical_operator;
-                    self.read_compare_value(row_ptr, buf, c)
-                }
-                Condition::Expr(expr) => {
-                    let field_meta = self
-                        .table_metadata
-                        .get_field_metadata(&expr.field)
-                        .unwrap();
+        let field_meta = self
+            .table_metadata
+            .get_field_metadata(&condition_expr.field)
+            .unwrap();
 
-                    copy_nonoverlapping(
-                        row_ptr.add(field_meta.offset),
-                        buf.as_mut_ptr(),
-                        field_meta.size,
-                    );
-                    buf.set_len(field_meta.size);
-                    let value = Value::from_ptr(&field_meta.data_def.data_type, buf.as_ptr());
-                    buf.clear();
-                    logical_op = expr.logical_operator;
-                    expr.operator.operate(&value, &expr.value)
-                }
-            };
+        copy_nonoverlapping(
+            row_ptr.add(field_meta.offset),
+            buf.as_mut_ptr(),
+            field_meta.size,
+        );
+        buf.set_len(field_meta.size);
+        let value = Value::from_ptr(&field_meta.data_def.data_type, buf.as_ptr());
+        buf.clear();
 
-            if matched.is_none(){
-                matched = Some(compare_result);
-            } else {
-                matched = Some(logical_op.operate(matched.unwrap(), compare_result));
-            }
-        }
-
-        matched.unwrap()
+        condition_expr
+            .operator
+            .operate(&value, &condition_expr.value)
     }
 }
 
