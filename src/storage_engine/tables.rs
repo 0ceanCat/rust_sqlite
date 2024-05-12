@@ -23,9 +23,9 @@ pub trait Table{
         &self,
         condition_clusters: &Vec<ConditionCluster>,
     ) -> Vec<RowBytes>;
-    fn find_by_condition_clusters_ref(
+    fn find_by_condition_cluster(
         &self,
-        condition_clusters: Vec<&ConditionCluster>,
+        condition_cluster: &ConditionCluster,
     ) -> Vec<RowBytes>;
     fn end(&mut self) -> WriteReadCursor;
     fn is_btree(&self) -> bool;
@@ -94,60 +94,64 @@ impl Table for BtreeTable {
         &self,
         condition_clusters: &Vec<ConditionCluster>,
     ) -> Vec<RowBytes> {
-        self.find_by_condition_clusters_ref(condition_clusters.iter().collect())
-    }
-
-    fn find_by_condition_clusters_ref(&self, condition_clusters: Vec<&ConditionCluster>) -> Vec<RowBytes> {
-        let mut result = Vec::new();
-        unsafe {
-            for cluster in condition_clusters.iter() {
-                let mut and_exprs = vec![];
-                let mut or_clusters = vec![];
-                let mut local_result = vec![];
-                for condition in cluster.iter() {
-                    if cluster.logical_operator == LogicalOperator::AND && condition.is_expr(){
-                        and_exprs.push(condition.unwrap_as_expr().unwrap());
-                    } else {
-                        or_clusters.push(condition)
+        let mut result = vec![];
+        let mut last_op = LogicalOperator::OR;
+        for cluster in condition_clusters {
+            let cluster_result = self.find_by_condition_cluster(cluster);
+            if last_op == LogicalOperator::OR {
+                result.extend(cluster_result);
+                last_op = last_op.combine(cluster.logical_operator);
+            } else {
+                let mut set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
+                result = vec![];
+                for r in cluster_result {
+                    if set.contains(&r) {
+                        result.push(r);
                     }
                 }
+            }
+        }
+        result
+    }
 
-                if !and_exprs.is_empty() {
-                    local_result = self.find_by_condition_exprs(and_exprs);
+    fn find_by_condition_cluster(&self, cluster: &ConditionCluster) -> Vec<RowBytes> {
+        let mut result = Vec::new();
+        let mut first = true;
+        unsafe {
+            let mut and_exprs = vec![];
+            let mut or_clusters = vec![];
+            for condition in cluster.iter() {
+                if cluster.logical_operator == LogicalOperator::AND && condition.is_expr(){
+                    and_exprs.push(condition.unwrap_as_expr().unwrap());
+                } else {
+                    or_clusters.push(condition)
                 }
+            }
 
-                for oc in or_clusters {
-                    if oc.is_expr() {
-                        local_result.extend(self.find_by_condition_exprs(vec![oc.unwrap_as_expr().unwrap()]));
+            if !and_exprs.is_empty() {
+                result = self.find_by_condition_exprs(and_exprs);
+            }
+
+            for oc in or_clusters {
+                if oc.is_expr() {
+                    result.extend(self.find_by_condition_exprs(vec![oc.unwrap_as_expr().unwrap()]));
+                } else {
+                    let cluster = oc.unwrap_as_cluster().unwrap();
+                    let cluster_result = self.find_by_condition_cluster(cluster);
+                    if cluster.logical_operator == LogicalOperator::OR || first {
+                        result.extend(cluster_result);
+                        first = false;
                     } else {
-                        let cluster = oc.unwrap_as_cluster().unwrap();
-                        let cluster_result = self.find_by_condition_clusters_ref(vec![cluster]);
-                        if cluster.logical_operator == LogicalOperator::OR {
-                            local_result.extend(cluster_result)
-                        } else {
-                            let mut set: HashSet<RowBytes> = HashSet::from_iter(local_result.into_iter());
-                            local_result = vec![];
-                            for r in cluster_result {
-                                if set.contains(&r) {
-                                    local_result.push(r);
-                                }
+                        let mut set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
+                        result = vec![];
+                        for r in cluster_result {
+                            if set.contains(&r) {
+                                result.push(r);
                             }
                         }
                     }
                 }
-
-                if cluster.logical_operator == LogicalOperator::OR {
-                    result.extend(local_result);
-                } else {
-                    let mut set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
-                    result = vec![];
-                    for r in local_result {
-                        if set.contains(&r) {
-                            result.push(r);
-                        }
-                    }
-                }
-            };
+            }
         }
         result
     }
@@ -269,7 +273,7 @@ impl BtreeTable {
 
         while !cursor.is_end() {
             let row_ptr = cursor.cursor_value();
-            let mut matched = false;
+            let mut matched = true;
             for expr in exprs.iter() {
                 matched &= self.read_compare_value(row_ptr, &mut buf, expr);
                 if !matched {
@@ -280,6 +284,7 @@ impl BtreeTable {
             if matched {
                 result.push(RowBytes::deserialize_row(row_ptr, self.row_size));
             }
+            cursor.cursor_advance();
         }
 
 
@@ -943,40 +948,48 @@ impl Table for SequentialTable {
         &self,
         condition_clusters: &Vec<ConditionCluster>,
     ) -> Vec<RowBytes> {
-        self.find_by_condition_clusters_ref(condition_clusters.iter().collect())
+        let mut result = vec![];
+        let mut last_op = LogicalOperator::OR;
+        for cluster in condition_clusters {
+            let cluster_result = self.find_by_condition_cluster(cluster);
+            if last_op == LogicalOperator::OR{
+                result.extend(cluster_result);
+                last_op = last_op.combine(cluster.logical_operator);
+            } else {
+                let mut set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
+                result = vec![];
+                for r in cluster_result {
+                    if set.contains(&r) {
+                        result.push(r);
+                    }
+                }
+            }
+        }
+        result
     }
 
-    fn find_by_condition_clusters_ref(&self, condition_clusters: Vec<&ConditionCluster>) -> Vec<RowBytes> {
+    fn find_by_condition_cluster(&self, cluster: &ConditionCluster) -> Vec<RowBytes> {
         let row_size = self.table_metadata.row_size;
         let mut cursor = ReadCursor::at(self, 0, 0);
         let mut result = Vec::new();
         let mut global_max_field_size: usize = 0;
 
-        condition_clusters.iter()
-                          .for_each(|condition_cluster| {
-                              for condition in &condition_cluster.conditions {
-                                  global_max_field_size = max(global_max_field_size, condition.get_field_max_size(&self.table_metadata));
-                              }
-                          });
-
+        for condition in &cluster.conditions {
+          global_max_field_size = max(global_max_field_size, condition.get_field_max_size(&self.table_metadata));
+        }
 
         let mut field_buf = Vec::<u8>::with_capacity(global_max_field_size);
 
         unsafe {
             while !cursor.is_end() {
                 let row_ptr = cursor.cursor_value();
-                let mut matched: Option<bool> = None;
-                for cluster in &condition_clusters {
-                    let compare_result = self.read_compare_value(row_ptr, &mut field_buf, cluster);
-                    if matched.is_none() {
-                        matched = Some(compare_result);
-                    } else {
-                        matched = Some(cluster.logical_operator.operate(matched.unwrap(), compare_result));
-                    }
-                }
-                if let Some(true) = matched {
+                let mut matched = true;
+                matched &= self.read_compare_value(row_ptr, &mut field_buf, cluster);
+
+                if matched {
                     result.push(RowBytes::deserialize_row(row_ptr, row_size));
                 }
+
                 cursor.cursor_advance();
             }
         }
