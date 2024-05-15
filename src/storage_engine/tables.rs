@@ -125,7 +125,7 @@ impl Table for BtreeTable {
             let mut and_exprs = vec![];
             let mut or_clusters = vec![];
             for condition in cluster.iter() {
-                if cluster.logical_operator == LogicalOperator::AND && condition.is_expr() {
+                if condition.is_expr() && condition.unwrap_as_expr().unwrap().logical_operator == LogicalOperator::AND{
                     and_exprs.push(condition.unwrap_as_expr().unwrap());
                 } else {
                     or_clusters.push(condition)

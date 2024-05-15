@@ -2,6 +2,7 @@ extern crate core;
 
 use std::{fs, ptr};
 use std::collections::HashMap;
+use std::fmt::format;
 use std::io::Write;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -47,7 +48,7 @@ impl TableManager {
 
     pub fn get_tables(&mut self, table_name: &str) -> Result<&mut Vec<Box<dyn Table>>, String> {
         if !self.tables.contains_key(table_name) {
-            self.load_tables(table_name).unwrap();
+            self.load_tables(table_name)?;
         }
 
         let result: &mut (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) =
@@ -113,7 +114,7 @@ impl TableManager {
 
     fn load_metadata(&mut self, table_name: &str) -> Result<TableStructureMetadata, String> {
         let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".frm");
-        let metadata = unsafe { Self::load_metadata_from_disk(&path)? };
+        let metadata = unsafe { Self::load_metadata_from_disk(&path, table_name)? };
         let tm = TableStructureMetadata::new(table_name, metadata);
         Ok(tm)
     }
@@ -130,8 +131,13 @@ impl TableManager {
 
     unsafe fn load_metadata_from_disk(
         path: &Path,
+        table_name: &str
     ) -> Result<Vec<(String, u32, Rc<FieldMetadata>)>, String> {
-        let metadata = fs::read(path).unwrap();
+        let metadata = match fs::read(path) {
+            Ok(metadata) => { metadata }
+            Err(_) => {return Err(format!("Table `{}` does not exist.", table_name))}
+        };
+
         let mut metadata_pointer = 0; // pointer that points to the position where we should start reading
 
         let ptr = metadata.as_ptr();

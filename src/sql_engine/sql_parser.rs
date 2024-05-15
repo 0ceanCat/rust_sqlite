@@ -236,11 +236,11 @@ impl<'a> WhereStmtParser<'a> {
         Ok(WhereExpr::new(condition_exprs))
     }
 
-    fn parse_condition_cluster(&mut self, logical_operator: LogicalOperator) -> Result<ConditionCluster, String> {
+    fn parse_condition_cluster(&mut self, cluster_operator: LogicalOperator) -> Result<ConditionCluster, String> {
         self.sql_parser.skip_white_spaces();
         let mut conditions = Vec::<Condition>::new();
         let mut more_than_one = false;
-        let mut logical_op = LogicalOperator::OR;
+        let mut logical_op = LogicalOperator::AND;
         let mut par = false;
 
         if self.sql_parser.current_char() == '(' {
@@ -273,7 +273,7 @@ impl<'a> WhereStmtParser<'a> {
         }
 
         self.sql_parser.skip_white_spaces();
-        Ok(ConditionCluster::new(logical_operator, conditions))
+        Ok(ConditionCluster::new(cluster_operator, conditions))
     }
 
     fn parse_expr(
