@@ -31,8 +31,14 @@ fn main() -> Result<(), String> {
 
         match sql {
             SqlStmt::SELECT(mut select) => {
-                let result = select.execute(&mut table_manager)?;
-                result.print();
+                match select.execute(&mut table_manager) {
+                    Ok(result) => {
+                        result.print();
+                    }
+                    Err(e) => {
+                        println!("{}", e)
+                    }
+                };
             }
             SqlStmt::INSERT(mut insert) => {
                 println!(

@@ -1,3 +1,6 @@
+use std::any::Any;
+use std::cmp::{max, PartialEq};
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::PathBuf;
@@ -5,23 +8,24 @@ use std::ptr;
 use std::ptr::null_mut;
 use std::rc::Rc;
 
-use crate::sql_engine::sql_structs::{
-    ConditionCluster, ConditionExpr, DataType, LogicalOperator, Operator, Value,
-};
+use crate::sql_engine::sql_structs::{Condition, ConditionCluster, ConditionExpr, DataType, LogicalOperator, Operator, Value};
 use crate::storage_engine::common::{RowBytes, RowToInsert, TableStructureMetadata};
 use crate::storage_engine::config::*;
 use crate::storage_engine::cursor::{ReadCursor, WriteReadCursor};
 use crate::storage_engine::enums::NodeType;
 use crate::storage_engine::pagers::{BtreePager, SequentialPager};
-use crate::utils::utils::{copy, copy_nonoverlapping, indent, u8_array_to_string};
+use crate::utils::utils::{copy, copy_nonoverlapping, ToU8, u8_array_to_string};
 
 pub trait Table {
     fn begin(&mut self) -> WriteReadCursor;
     fn insert(&mut self, row: &RowToInsert) -> Result<(), String>;
-    fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes>;
     fn find_by_condition_clusters(
-        &mut self,
-        condition_clusters: &Vec<(LogicalOperator, ConditionCluster)>,
+        &self,
+        condition_clusters: &Vec<ConditionCluster>,
+    ) -> Vec<RowBytes>;
+    fn find_by_condition_cluster(
+        &self,
+        condition_cluster: &ConditionCluster,
     ) -> Vec<RowBytes>;
     fn end(&mut self) -> WriteReadCursor;
     fn is_btree(&self) -> bool;
@@ -33,6 +37,7 @@ pub trait Table {
     fn get_row_value_mut(&mut self, page_index: usize, cell_index: usize) -> *mut u8;
     fn flush_to_disk(&mut self);
     fn print_tree(&self, page_index: usize, cell_index: usize);
+    fn as_any(&self) -> &dyn Any;
 }
 
 pub struct BtreeMeta {
@@ -71,7 +76,7 @@ impl Table for BtreeTable {
 
         let (_, key_value) = key.unwrap();
 
-        let cursor = self.table_find_by_key(key_value);
+        let cursor = self.table_find_by_key(key_value, Operator::EQUALS(false));
         let page_index = cursor.page_index;
         let cell_index = cursor.cell_index;
 
@@ -85,122 +90,77 @@ impl Table for BtreeTable {
         Ok(())
     }
 
-    fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes> {
-        let field_size = self
-            .table_metadata
-            .get_field_metadata(&condition_expr.field)
-            .unwrap()
-            .size;
-
-        if condition_expr.field == self.key_field_name
-            && condition_expr.operator != Operator::EQUALS(false)
-        {
-            self.scan_index(condition_expr)
-        } else {
-            self.full_scan(field_size, condition_expr)
-        }
-    }
-
     fn find_by_condition_clusters(
-        &mut self,
-        condition_clusters: &Vec<(LogicalOperator, ConditionCluster)>,
+        &self,
+        condition_clusters: &Vec<ConditionCluster>,
     ) -> Vec<RowBytes> {
-        let row_size = self.table_metadata.row_size;
-        let mut cursor = ReadCursor::at(self, 0, 0);
-        let mut result = Vec::new();
-
-        let mut cluster_conditions = Vec::<(
-            &LogicalOperator,
-            Vec<&ConditionExpr>,
-            Vec<&ConditionExpr>,
-            usize,
-        )>::with_capacity(condition_clusters.len());
-
-        condition_clusters
-            .iter()
-            .for_each(|(logical_op, condition_cluster)| {
-                let and_conditions: Vec<&ConditionExpr> = condition_cluster
-                    .conditions
-                    .iter()
-                    .filter(|c| c.logical_operator == LogicalOperator::AND)
-                    .collect();
-
-                let or_conditions: Vec<&ConditionExpr> = condition_cluster
-                    .conditions
-                    .iter()
-                    .filter(|c| c.logical_operator == LogicalOperator::OR)
-                    .collect();
-
-                let max_size_field = condition_cluster
-                    .conditions
-                    .iter()
-                    .map(|c| {
-                        self.table_metadata
-                            .get_field_metadata(&c.field)
-                            .unwrap()
-                            .size
-                    })
-                    .max()
-                    .unwrap();
-                cluster_conditions.push((
-                    logical_op,
-                    and_conditions,
-                    or_conditions,
-                    max_size_field,
-                ));
-            });
-
-        let global_max_field_size = cluster_conditions
-            .iter()
-            .map(|(_, _, _, cluster_max_field_size)| *cluster_max_field_size)
-            .max()
-            .unwrap();
-
-        let mut buf = Vec::<u8>::with_capacity(global_max_field_size);
-
-        unsafe {
-            while !cursor.is_end() {
-                let row_ptr = cursor.cursor_value();
-                let mut all_clusters_matched = true;
-                for (logical_op, and_conditions, or_conditions, _) in &cluster_conditions {
-                    let mut and_matched: Option<bool> = None;
-
-                    for condition_expr in and_conditions {
-                        let compare = self.read_compare_value(row_ptr, &mut buf, condition_expr);
-                        if and_matched.is_none() {
-                            and_matched = Some(compare);
-                        } else {
-                            and_matched.replace(and_matched.unwrap() & compare);
-                        }
-
-                        if !and_matched.unwrap() {
-                            break;
-                        }
-                    }
-
-                    let mut or_matched = false;
-
-                    for condition_expr in or_conditions {
-                        or_matched |= self.read_compare_value(row_ptr, &mut buf, condition_expr);
-
-                        if or_matched {
-                            break;
-                        }
-                    }
-
-                    all_clusters_matched = logical_op.operate(
-                        all_clusters_matched,
-                        or_matched | (and_matched.is_some() && and_matched.unwrap()),
-                    );
+        let mut result = vec![];
+        let mut last_op: Option<LogicalOperator> = None;
+        for cluster in condition_clusters {
+            let cluster_result = self.find_by_condition_cluster(cluster);
+            if last_op.is_none() || last_op.clone().unwrap().combine(cluster.logical_operator) == LogicalOperator::OR {
+                result.extend(cluster_result);
+                if last_op.is_none() {
+                    last_op = Some(cluster.logical_operator);
+                } else {
+                    last_op = Some(last_op.unwrap().combine(cluster.logical_operator));
                 }
-
-                if all_clusters_matched {
-                    result.push(RowBytes::deserialize_row(row_ptr, row_size));
+            } else {
+                let mut set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
+                result = vec![];
+                for r in cluster_result {
+                    if set.contains(&r) {
+                        result.push(r);
+                    }
                 }
-                cursor.cursor_advance();
             }
         }
+        result
+    }
 
+    fn find_by_condition_cluster(&self, cluster: &ConditionCluster) -> Vec<RowBytes> {
+        let mut result = Vec::new();
+        let mut last_op: Option<LogicalOperator> = None;
+        unsafe {
+            let mut and_exprs = vec![];
+            let mut or_clusters = vec![];
+            for condition in cluster.iter() {
+                if condition.is_expr() && condition.unwrap_as_expr().unwrap().logical_operator == LogicalOperator::AND{
+                    and_exprs.push(condition.unwrap_as_expr().unwrap());
+                } else {
+                    or_clusters.push(condition)
+                }
+            }
+
+            if !and_exprs.is_empty() {
+                result = self.find_by_condition_exprs(and_exprs);
+            }
+
+            for oc in or_clusters {
+                if oc.is_expr() {
+                    result.extend(self.find_by_condition_exprs(vec![oc.unwrap_as_expr().unwrap()]));
+                } else {
+                    let cluster = oc.unwrap_as_cluster().unwrap();
+                    let cluster_result = self.find_by_condition_cluster(cluster);
+                    if last_op.is_none() || last_op.clone().unwrap().combine(cluster.logical_operator) == LogicalOperator::OR {
+                        result.extend(cluster_result);
+                        if last_op.is_none() {
+                            last_op = Some(cluster.logical_operator);
+                        } else {
+                            last_op = Some(last_op.unwrap().combine(cluster.logical_operator))
+                        }
+                    } else {
+                        let mut set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
+                        result = vec![];
+                        for r in cluster_result {
+                            if set.contains(&r) {
+                                result.push(r);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         result
     }
 
@@ -259,6 +219,10 @@ impl Table for BtreeTable {
         println!("{}", page_index);
         println!("{}", cell_index);
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl BtreeTable {
@@ -267,7 +231,6 @@ impl BtreeTable {
         table_metadata: Rc<TableStructureMetadata>,
     ) -> Result<BtreeTable, String> {
         match OpenOptions::new()
-            .create(true)
             .read(true)
             .write(true)
             .open(path)
@@ -302,53 +265,38 @@ impl BtreeTable {
         }
     }
 
-    fn scan_index(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes> {
-        let row_size = self.row_size;
-        let mut result = Vec::new();
-        let mut buf = Vec::<u8>::with_capacity(self.key_size);
+    unsafe fn find_by_condition_exprs(&self, mut exprs: Vec<&ConditionExpr>) -> Vec<RowBytes> {
+        exprs.sort_by(|e1, e2| (e2.field == self.key_field_name).to_u8().cmp(&(e1.field == self.key_field_name).to_u8()));
+        let max_field_size = exprs.iter().map(|e| self.table_metadata.get_field_metadata(&e.field).unwrap().size).max().unwrap();
+        let mut buf = Vec::<u8>::with_capacity(max_field_size);
+        let mut result = vec![];
 
-        let mut scan_until_not_satisfies = |v| unsafe {
-            let mut cursor = self.table_find_by_key(v);
-            while !cursor.is_end() {
-                let row_ptr = cursor.cursor_value();
-                if self.read_compare_value(row_ptr, &mut buf, condition_expr) {
-                    result.push(RowBytes::deserialize_row(row_ptr, row_size));
-                } else {
+        let mut cursor;
+
+        if exprs.first().unwrap().field == self.key_field_name {
+            println!("Index scan for field `{}`", self.key_field_name);
+            let first_expr = exprs.first().unwrap();
+            cursor = self.table_find_by_key(&first_expr.value, first_expr.operator);
+        } else {
+            cursor = self.find_smallest_or_biggest_key(false);
+        }
+
+        while !cursor.is_end() {
+            let row_ptr = cursor.cursor_value();
+            let mut matched = true;
+            for expr in exprs.iter() {
+                matched &= self.read_compare_value(row_ptr, &mut buf, expr);
+                if !matched {
                     break;
                 }
-                cursor.cursor_advance();
             }
-        };
 
-        if condition_expr.value.is_array() {
-            let array = condition_expr.value.unwrap_as_array().unwrap();
-            for v in array {
-                scan_until_not_satisfies(v);
+            if matched {
+                result.push(RowBytes::deserialize_row(row_ptr, self.row_size));
             }
-        } else {
-            scan_until_not_satisfies(&condition_expr.value);
+            cursor.cursor_advance();
         }
 
-        result
-    }
-
-    fn full_scan(&self, field_size: usize, condition_expr: &ConditionExpr) -> Vec<RowBytes> {
-        let row_size = self.row_size;
-        let mut cursor = ReadCursor::at(self, 0, 0);
-        let mut result = Vec::new();
-        let mut buf = Vec::<u8>::with_capacity(field_size);
-
-        unsafe {
-            while !cursor.is_end() {
-                let row_ptr = cursor.cursor_value();
-
-                if self.read_compare_value(row_ptr, &mut buf, condition_expr) {
-                    result.push(RowBytes::deserialize_row(row_ptr, row_size));
-                }
-
-                cursor.cursor_advance();
-            }
-        }
 
         result
     }
@@ -517,31 +465,34 @@ impl BtreeTable {
         row.serialize_row(self.pager.get_leaf_node_value(page, cell_index));
     }
 
-    pub(crate) fn table_find_by_key(&self, key: &Value) -> WriteReadCursor {
+    pub(crate) fn table_find_by_key(&self, key: &Value, operator: Operator) -> WriteReadCursor {
         unsafe {
             let s_ptr: &mut Self = std::mem::transmute(self as *const Self);
 
             let node_type = (*s_ptr).pager.get_node_type_by_index(self.root_page_index);
             match node_type {
-                NodeType::Internal => (*s_ptr).internal_node_find(self.root_page_index, &key),
-                NodeType::Leaf => (*s_ptr).leaf_node_find(self.root_page_index, &key),
+                NodeType::Internal => (*s_ptr).internal_node_find(self.root_page_index, &key, operator),
+                NodeType::Leaf => (*s_ptr).leaf_node_find(self.root_page_index, &key, operator),
             }
         }
     }
 
-    pub(crate) fn find_smallest_or_biggest_key(&mut self, biggest: bool) -> WriteReadCursor {
-        let node_type = self.pager.get_node_type_by_index(self.root_page_index);
-        match node_type {
-            NodeType::Internal => {
-                self.internal_node_find_smallest_or_biggest(self.root_page_index, biggest)
-            }
-            NodeType::Leaf => {
-                self.leaf_node_find_smallest_or_biggest(self.root_page_index, biggest)
+    pub(crate) fn find_smallest_or_biggest_key(&self, biggest: bool) -> WriteReadCursor {
+        unsafe {
+            let s_ptr: &mut Self = std::mem::transmute(self as *const Self);
+            let node_type = (*s_ptr).pager.get_node_type_by_index(self.root_page_index);
+            match node_type {
+                NodeType::Internal => {
+                    (*s_ptr).internal_node_find_smallest_or_biggest(self.root_page_index, biggest)
+                }
+                NodeType::Leaf => {
+                    (*s_ptr).leaf_node_find_smallest_or_biggest(self.root_page_index, biggest)
+                }
             }
         }
     }
 
-    fn leaf_node_find(&mut self, page_index: usize, key: &Value) -> WriteReadCursor {
+    fn leaf_node_find(&mut self, page_index: usize, key: &Value, operator: Operator) -> WriteReadCursor {
         let node = self.pager.get_or_create_page(page_index);
         let cells_num = BtreePager::get_leaf_node_num_cells(node);
 
@@ -552,7 +503,7 @@ impl BtreeTable {
             let key_at_index = self
                 .pager
                 .get_leaf_node_cell_key(node, index, &self.key_type);
-            if *key == key_at_index {
+            if operator.operate(key, &key_at_index) {
                 return WriteReadCursor::at(self, page_index, index);
             }
             if *key < key_at_index {
@@ -623,14 +574,14 @@ impl BtreeTable {
         }
     }
 
-    fn internal_node_find(&mut self, page_index: usize, key: &Value) -> WriteReadCursor {
+    fn internal_node_find(&mut self, page_index: usize, key: &Value, operator: Operator) -> WriteReadCursor {
         let node = self.pager.get_or_create_page(page_index);
         let cell_index = self.internal_node_find_child(node, key);
         let child_index = BtreePager::get_internal_node_child(node, cell_index);
         let child = self.pager.get_or_create_page(child_index);
         match BtreePager::get_node_type(child) {
-            NodeType::Leaf => self.leaf_node_find(child_index, key),
-            NodeType::Internal => self.internal_node_find(child_index, key),
+            NodeType::Leaf => self.leaf_node_find(child_index, key, operator),
+            NodeType::Internal => self.internal_node_find(child_index, key, operator),
         }
     }
 
@@ -800,46 +751,6 @@ impl BtreeTable {
         }
     }
 
-    pub fn print_tree(&mut self, page_num: usize, indentation_level: usize) {
-        let node = self.pager.get_page(page_num);
-        match BtreePager::get_node_type(node) {
-            NodeType::Leaf => {
-                indent(indentation_level);
-                println!("* node {:p}, index: {}: ", node, page_num);
-                let num_keys = BtreePager::get_leaf_node_num_cells(node);
-                indent(indentation_level + 1);
-                println!("- leaf (size {})", num_keys);
-                for i in 0..num_keys {
-                    indent(indentation_level + 2);
-                    println!(
-                        "- {:?}",
-                        self.pager.get_leaf_node_cell_key(node, i, &self.key_type)
-                    );
-                }
-            }
-            NodeType::Internal => {
-                let num_keys = BtreePager::get_internal_node_num_keys(node);
-                indent(indentation_level);
-                println!("- internal (size {})", num_keys);
-                if num_keys > 0 {
-                    let child: usize;
-                    for i in 0..num_keys {
-                        let child = BtreePager::get_internal_node_child(node, i);
-                        self.print_tree(child, indentation_level + 1);
-
-                        indent(indentation_level + 1);
-                        println!(
-                            "- key {:?}",
-                            BtreePager::get_internal_node_cell_key(node, i, &self.key_type)
-                        );
-                    }
-                    child = BtreePager::get_internal_node_right_child(node);
-                    self.print_tree(child, indentation_level + 1);
-                }
-            }
-        }
-    }
-
     pub fn internal_node_insert(&mut self, parent_index: usize, child_index: usize) {
         /*
         +  Add a new child/key pair to parent that corresponds to child
@@ -948,7 +859,10 @@ impl SequentialTable {
         path: &PathBuf,
         table_metadata: Rc<TableStructureMetadata>,
     ) -> Result<SequentialTable, String> {
-        match File::open(path) {
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path) {
             Ok(file) => {
                 let pager = SequentialPager::open(file);
                 Ok(SequentialTable {
@@ -981,25 +895,43 @@ impl SequentialTable {
         &self,
         row_ptr: *const u8,
         buf: &mut Vec<u8>,
-        condition_expr: &ConditionExpr,
+        cluster: &ConditionCluster,
     ) -> bool {
-        let field_meta = self
-            .table_metadata
-            .get_field_metadata(&condition_expr.field)
-            .unwrap();
+        let mut matched: Option<bool> = None;
+        for condition in &cluster.conditions {
+            let logical_op: LogicalOperator;
+            let compare_result = match condition {
+                Condition::Cluster(c) => {
+                    logical_op = c.logical_operator;
+                    self.read_compare_value(row_ptr, buf, c)
+                }
+                Condition::Expr(expr) => {
+                    let field_meta = self
+                        .table_metadata
+                        .get_field_metadata(&expr.field)
+                        .unwrap();
 
-        copy_nonoverlapping(
-            row_ptr.add(field_meta.offset),
-            buf.as_mut_ptr(),
-            field_meta.size,
-        );
-        buf.set_len(field_meta.size);
-        let value = Value::from_ptr(&field_meta.data_def.data_type, buf.as_ptr());
-        buf.clear();
+                    copy_nonoverlapping(
+                        row_ptr.add(field_meta.offset),
+                        buf.as_mut_ptr(),
+                        field_meta.size,
+                    );
+                    buf.set_len(field_meta.size);
+                    let value = Value::from_ptr(&field_meta.data_def.data_type, buf.as_ptr());
+                    buf.clear();
+                    logical_op = expr.logical_operator;
+                    expr.operator.operate(&value, &expr.value)
+                }
+            };
 
-        condition_expr
-            .operator
-            .operate(&value, &condition_expr.value)
+            if matched.is_none() {
+                matched = Some(compare_result);
+            } else {
+                matched = Some(logical_op.operate(matched.unwrap(), compare_result));
+            }
+        }
+
+        matched.unwrap()
     }
 }
 
@@ -1022,129 +954,56 @@ impl Table for SequentialTable {
         Ok(())
     }
 
-    fn find_by_condition(&mut self, condition_expr: &ConditionExpr) -> Vec<RowBytes> {
-        let field_size = self
-            .table_metadata
-            .get_field_metadata(&condition_expr.field)
-            .unwrap()
-            .size;
-        let row_size = self.table_metadata.row_size;
-        let mut cursor = ReadCursor::at(self, 0, 0);
-        let mut result = Vec::new();
-
-        let mut buf = Vec::<u8>::with_capacity(field_size);
-
-        unsafe {
-            while !cursor.is_end() {
-                let row_ptr = cursor.cursor_value();
-
-                if self.read_compare_value(row_ptr, &mut buf, condition_expr) {
-                    result.push(RowBytes::deserialize_row(row_ptr, row_size));
+    fn find_by_condition_clusters(
+        &self,
+        condition_clusters: &Vec<ConditionCluster>,
+    ) -> Vec<RowBytes> {
+        let mut result = vec![];
+        let mut last_op: Option<LogicalOperator> = None;
+        for cluster in condition_clusters {
+            let cluster_result = self.find_by_condition_cluster(cluster);
+            if last_op.is_none() || last_op.clone().unwrap().combine(cluster.logical_operator) == LogicalOperator::OR {
+                result.extend(cluster_result);
+                if last_op.is_none() {
+                    last_op = Some(cluster.logical_operator);
+                } else {
+                    last_op = Some(last_op.unwrap().combine(cluster.logical_operator));
                 }
-
-                cursor.cursor_advance();
+            } else {
+                let mut set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
+                result = vec![];
+                for r in cluster_result {
+                    if set.contains(&r) {
+                        result.push(r);
+                    }
+                }
             }
         }
-
         result
     }
 
-    fn find_by_condition_clusters(
-        &mut self,
-        condition_clusters: &Vec<(LogicalOperator, ConditionCluster)>,
-    ) -> Vec<RowBytes> {
+    fn find_by_condition_cluster(&self, cluster: &ConditionCluster) -> Vec<RowBytes> {
         let row_size = self.table_metadata.row_size;
         let mut cursor = ReadCursor::at(self, 0, 0);
         let mut result = Vec::new();
+        let mut global_max_field_size: usize = 0;
 
-        let mut cluster_conditions = Vec::<(
-            &LogicalOperator,
-            Vec<&ConditionExpr>,
-            Vec<&ConditionExpr>,
-            usize,
-        )>::with_capacity(condition_clusters.len());
+        for condition in &cluster.conditions {
+            global_max_field_size = max(global_max_field_size, condition.get_field_max_size(&self.table_metadata));
+        }
 
-        condition_clusters
-            .iter()
-            .for_each(|(logical_op, condition_cluster)| {
-                let and_conditions: Vec<&ConditionExpr> = condition_cluster
-                    .conditions
-                    .iter()
-                    .filter(|c| c.logical_operator == LogicalOperator::AND)
-                    .collect();
-
-                let or_conditions: Vec<&ConditionExpr> = condition_cluster
-                    .conditions
-                    .iter()
-                    .filter(|c| c.logical_operator == LogicalOperator::OR)
-                    .collect();
-
-                let max_size_field = condition_cluster
-                    .conditions
-                    .iter()
-                    .map(|c| {
-                        self.table_metadata
-                            .get_field_metadata(&c.field)
-                            .unwrap()
-                            .size
-                    })
-                    .max()
-                    .unwrap();
-                cluster_conditions.push((
-                    logical_op,
-                    and_conditions,
-                    or_conditions,
-                    max_size_field,
-                ));
-            });
-
-        let global_max_field_size = cluster_conditions
-            .iter()
-            .map(|(_, _, _, cluster_max_field_size)| *cluster_max_field_size)
-            .max()
-            .unwrap();
-
-        let mut buf = Vec::<u8>::with_capacity(global_max_field_size);
+        let mut field_buf = Vec::<u8>::with_capacity(global_max_field_size);
 
         unsafe {
             while !cursor.is_end() {
                 let row_ptr = cursor.cursor_value();
-                let mut all_clusters_matched = true;
-                for (logical_op, and_conditions, or_conditions, _) in &cluster_conditions {
-                    let mut and_matched: Option<bool> = None;
+                let mut matched = true;
+                matched &= self.read_compare_value(row_ptr, &mut field_buf, cluster);
 
-                    for condition_expr in and_conditions {
-                        let compare = self.read_compare_value(row_ptr, &mut buf, condition_expr);
-                        if and_matched.is_none() {
-                            and_matched = Some(compare);
-                        } else {
-                            and_matched.replace(and_matched.unwrap() & compare);
-                        }
-
-                        if !and_matched.unwrap() {
-                            break;
-                        }
-                    }
-
-                    let mut or_matched = false;
-
-                    for condition_expr in or_conditions {
-                        or_matched |= self.read_compare_value(row_ptr, &mut buf, condition_expr);
-
-                        if or_matched {
-                            break;
-                        }
-                    }
-
-                    all_clusters_matched = logical_op.operate(
-                        all_clusters_matched,
-                        or_matched | (and_matched.is_some() && and_matched.unwrap()),
-                    );
-                }
-
-                if all_clusters_matched {
+                if matched {
                     result.push(RowBytes::deserialize_row(row_ptr, row_size));
                 }
+
                 cursor.cursor_advance();
             }
         }
@@ -1213,5 +1072,9 @@ impl Table for SequentialTable {
     fn print_tree(&self, page_index: usize, cell_index: usize) {
         println!("{}", page_index);
         println!("{}", cell_index);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }

@@ -1,9 +1,5 @@
 use crate::sql_engine::keywords::*;
-use crate::sql_engine::sql_structs::{
-    ConditionCluster, ConditionExpr, CreateStmt, DataType, FieldDefinition, InsertStmt,
-    LogicalOperator, Operator, Order, OrderByCluster, OrderByExpr, SelectStmt, SqlStmt, Value,
-    WhereExpr,
-};
+use crate::sql_engine::sql_structs::{Condition, ConditionCluster, ConditionExpr, CreateStmt, DataType, FieldDefinition, InsertStmt, LogicalOperator, Operator, Order, OrderByCluster, OrderByExpr, SelectStmt, SqlStmt, Value, WhereExpr};
 use crate::storage_engine::config::FIELD_NAME_SIZE;
 
 static BLANK_SYMBOLS: [char; 4] = [' ', '\t', '\n', '\r'];
@@ -208,12 +204,12 @@ impl<'a> WhereStmtParser<'a> {
         self.sql_parser.position += WHERE.len();
         self.sql_parser.skip_white_spaces();
 
-        let mut condition_exprs = Vec::<(LogicalOperator, ConditionCluster)>::new();
+        let mut condition_exprs = Vec::<ConditionCluster>::new();
         let mut logical_op = Some(LogicalOperator::AND);
 
         while !self.sql_parser.is_end() {
-            let condition_expr = self.parse_condition_cluster()?;
-            condition_exprs.push((logical_op.unwrap(), condition_expr));
+            let condition_expr = self.parse_condition_cluster(logical_op.unwrap())?;
+            condition_exprs.push(condition_expr);
             logical_op = None;
 
             if self.sql_parser.is_end() || self.sql_parser.starts_with(ORDER_BY) {
@@ -240,35 +236,49 @@ impl<'a> WhereStmtParser<'a> {
         Ok(WhereExpr::new(condition_exprs))
     }
 
-    fn parse_condition_cluster(&mut self) -> Result<ConditionCluster, String> {
+    fn parse_condition_cluster(&mut self, cluster_operator: LogicalOperator) -> Result<ConditionCluster, String> {
         self.sql_parser.skip_white_spaces();
-        let mut conditions = Vec::<ConditionExpr>::new();
+        let mut conditions = Vec::<Condition>::new();
         let mut more_than_one = false;
-        let mut logical_op = LogicalOperator::OR;
+        let mut logical_op = LogicalOperator::AND;
+        let mut par = false;
+
         if self.sql_parser.current_char() == '(' {
             self.sql_parser.advance(); //skip '('
-            while !self.sql_parser.is_end() {
-                if more_than_one {
-                    logical_op = LogicalOperator::try_from(self.sql_parser.read_token()?.as_str())?;
-                }
-                conditions.push(self.parse_condition(logical_op)?);
-                if self.sql_parser.current_char() == ')' {
-                    break;
-                }
-                more_than_one = true;
-            }
-            if self.sql_parser.current_char() != ')' {
-                return Err(format!("Syntax error, Where statement is incorrectly formatted, expected a ')' but found {}", self.sql_parser.current_char()));
-            }
-            self.sql_parser.advance(); //skip ')'
-        } else {
-            conditions.push(self.parse_condition(logical_op)?);
+            par = true;
         }
+
+        while !self.sql_parser.is_end() && !self.sql_parser.starts_with(ORDER_BY) {
+            if more_than_one {
+                logical_op = LogicalOperator::try_from(self.sql_parser.read_token()?.as_str())?;
+            }
+            conditions.push(Condition::Expr(self.parse_expr(logical_op)?));
+
+            if par && self.sql_parser.starts_with(OR) {
+                self.sql_parser.position += OR.len();
+                conditions.push(Condition::Cluster(self.parse_condition_cluster(LogicalOperator::OR)?));
+            } else if self.sql_parser.starts_with(OR) {
+                break
+            }
+
+            if self.sql_parser.current_char() == ')' {
+                break;
+            }
+
+            more_than_one = true;
+        }
+
+        if par && self.sql_parser.current_char() != ')' {
+            return Err(format!("Syntax error, Where statement is incorrectly formatted, expected a ')' but found {}", self.sql_parser.current_char()));
+        } else if par {
+            self.sql_parser.advance(); //skip ')'
+        }
+
         self.sql_parser.skip_white_spaces();
-        Ok(ConditionCluster::new(conditions))
+        Ok(ConditionCluster::new(cluster_operator, conditions))
     }
 
-    fn parse_condition(
+    fn parse_expr(
         &mut self,
         logical_operator: LogicalOperator,
     ) -> Result<ConditionExpr, String> {
@@ -546,9 +556,6 @@ impl<'a> ValueParser<'a> {
                         "An array must contain only primitive values. But array detected.",
                     ))
                 }
-                Value::SelectStmt(_) => return Err(String::from(
-                    "An array must contain only primitive values. But select statement detected.",
-                )),
                 _ => {}
             }
 

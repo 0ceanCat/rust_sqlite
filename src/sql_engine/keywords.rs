@@ -13,8 +13,10 @@ pub const TEXT: &str = "text";
 pub const INTEGER: &str = "integer";
 pub const FLOAT: &str = "float";
 pub const BOOLEAN: &str = "boolean";
+pub const OR: &str = "or";
+pub const AND: &str = "and";
 
-const KEY_WORDS: [&str; 15] = [
+const KEY_WORDS: [&str; 17] = [
     SELECT,
     INSERT,
     INTO,
@@ -30,6 +32,8 @@ const KEY_WORDS: [&str; 15] = [
     INTEGER,
     FLOAT,
     BOOLEAN,
+    OR,
+    AND
 ];
 
 pub fn is_key_words(k: &str) -> bool {

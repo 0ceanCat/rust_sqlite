@@ -2,6 +2,7 @@ extern crate core;
 
 use std::{fs, ptr};
 use std::collections::HashMap;
+use std::fmt::format;
 use std::io::Write;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -16,14 +17,19 @@ use crate::storage_engine::tables::{BtreeTable, SequentialTable, Table};
 use crate::utils::utils::{copy, copy_nonoverlapping, list_files_of_folder, u8_array_to_string};
 
 pub struct TableManager {
-    tables: HashMap<String, (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>)>,
+    tables: HashMap<String, (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>)>
 }
 
 impl TableManager {
     pub fn new() -> TableManager {
         TableManager {
-            tables: HashMap::new(),
+            tables: HashMap::new()
         }
+    }
+
+    pub fn find_index_for_field(&self, table_name: &str, field: &str) -> Option<&Box<dyn Table>> {
+        let tables = self.tables.get(table_name).unwrap();
+        tables.1.iter().find(|t| t.as_any().downcast_ref::<BtreeTable>().unwrap().key_field_name == field)
     }
 
     pub fn register_new_table(
@@ -42,7 +48,7 @@ impl TableManager {
 
     pub fn get_tables(&mut self, table_name: &str) -> Result<&mut Vec<Box<dyn Table>>, String> {
         if !self.tables.contains_key(table_name) {
-            self.load_tables(table_name).unwrap();
+            self.load_tables(table_name)?;
         }
 
         let result: &mut (Rc<TableStructureMetadata>, Vec<Box<dyn Table>>) =
@@ -108,7 +114,7 @@ impl TableManager {
 
     fn load_metadata(&mut self, table_name: &str) -> Result<TableStructureMetadata, String> {
         let path = build_path!(DATA_FOLDER, table_name, table_name.to_owned() + ".frm");
-        let metadata = unsafe { Self::load_metadata_from_disk(&path)? };
+        let metadata = unsafe { Self::load_metadata_from_disk(&path, table_name)? };
         let tm = TableStructureMetadata::new(table_name, metadata);
         Ok(tm)
     }
@@ -125,8 +131,13 @@ impl TableManager {
 
     unsafe fn load_metadata_from_disk(
         path: &Path,
+        table_name: &str
     ) -> Result<Vec<(String, u32, Rc<FieldMetadata>)>, String> {
-        let metadata = fs::read(path).unwrap();
+        let metadata = match fs::read(path) {
+            Ok(metadata) => { metadata }
+            Err(_) => {return Err(format!("Table `{}` does not exist.", table_name))}
+        };
+
         let mut metadata_pointer = 0; // pointer that points to the position where we should start reading
 
         let ptr = metadata.as_ptr();
@@ -326,7 +337,6 @@ impl<'a> RowToInsert<'a> {
                         copy_nonoverlapping(s.as_ptr(), buf.add(field_meta.offset), s.len());
                     }
                     Value::ARRAY(_) => {}
-                    Value::SelectStmt(_) => {}
                 }
             }
         }
@@ -372,6 +382,7 @@ pub struct TableStructureMetadata {
     pub row_size: usize,
     pub fields_meta_map: HashMap<String, (u32, Rc<FieldMetadata>)>,
     pub fields: Vec<Rc<FieldMetadata>>,
+    pub fields_max_size: usize
 }
 
 impl TableStructureMetadata {
@@ -385,10 +396,12 @@ impl TableStructureMetadata {
             .reduce(|a, b| a + b)
             .unwrap();
 
-        let fields = fields_metadata
-            .iter()
-            .map(|(_, _, m)| Rc::clone(m))
-            .collect();
+        let fields:Vec<Rc<FieldMetadata>> = fields_metadata
+                                                .iter()
+                                                .map(|(_, _, m)| Rc::clone(m))
+                                                .collect();
+
+        let fields_max_size = fields.iter().map(|f| f.size).max().unwrap();
 
         let fields_meta_map: HashMap<String, (u32, Rc<FieldMetadata>)> = fields_metadata
             .into_iter()
@@ -399,13 +412,14 @@ impl TableStructureMetadata {
             row_size,
             fields_meta_map,
             fields,
+            fields_max_size
         }
     }
 
     pub fn get_field_metadata(&self, field_name: &str) -> Result<&FieldMetadata, String> {
         match self.fields_meta_map.get(field_name) {
             None => Err(format!(
-                "Field {} does not found in the table {}!",
+                "Field `{}` does not found in the table `{}`!",
                 field_name, self.table_name
             )),
             Some((_, fm)) => Ok(fm),

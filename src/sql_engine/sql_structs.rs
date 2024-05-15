@@ -1,9 +1,11 @@
 use std::{fs, ptr};
-use std::cmp::{Ordering, PartialEq, PartialOrd};
+use std::cmp::{max, Ordering, PartialEq, PartialOrd};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::slice::Iter;
 
 use crate::build_path;
 use crate::sql_engine::sql_structs::Operator::{EQUALS, GT, GTE, IN, LT, LTE};
@@ -47,36 +49,30 @@ impl SelectStmt {
         &'a mut self,
         table_manager: &'a mut TableManager,
     ) -> Result<SelectResult, String> {
-        let table = table_manager.get_tables(&self.table)?.iter_mut().next();
-        if table.is_none() {
-            return Err(format!("Table {} does not exist.", self.table));
+        let table = table_manager.get_tables(&self.table);
+        if table.is_err() {
+            return Err(format!("Table `{}` does not exist.", self.table));
         }
 
-        let table = table.unwrap();
-
-        let result = self.execute_where(table);
+        let result = self.execute_where(table_manager);
 
         let table_meta = table_manager.get_table_metadata(&self.table)?;
 
         let selected_fields: Vec<&str> =
             if self.selected_fields.len() == 1 && self.selected_fields.first().unwrap() == "*" {
-                table_meta
-                    .fields
-                    .iter()
-                    .map(|v| v.data_def.field_name.as_str())
-                    .collect()
+                table_meta.fields
+                          .iter()
+                          .map(|v| v.data_def.field_name.as_str())
+                          .collect()
             } else {
                 self.selected_fields.iter().map(|x| x.as_str()).collect()
             };
 
-        let order_by_exprs = self
-            .order_by_expr
-            .take()
-            .unwrap_or_else(|| OrderByCluster::new(vec![]))
-            .order_by_exprs;
+        let order_by_exprs = self.order_by_expr.take()
+                                 .unwrap_or_else(|| OrderByCluster::new(vec![]))
+                                 .order_by_exprs;
 
-        let projected_results =
-            self.order_by(order_by_exprs, &result, table_meta, &selected_fields)?;
+        let projected_results = self.order_by(order_by_exprs, &result, table_meta, &selected_fields)?;
 
         let human_readable_results = projected_results.into_iter().map(|(v, _)| v).collect();
 
@@ -173,10 +169,16 @@ impl SelectStmt {
         Ok(projected_results)
     }
 
-    fn execute_where(&mut self, table: &mut Box<dyn Table>) -> Vec<RowBytes> {
-        match &self.where_expr {
-            None => table.get_all(),
-            Some(w) => w.execute(table),
+    fn execute_where(&mut self, table_manager: &mut TableManager) -> Vec<RowBytes> {
+        match &mut self.where_expr {
+            None => table_manager.get_tables(&self.table)
+                                 .unwrap()
+                                 .first()
+                                 .unwrap()
+                                 .get_all(),
+            Some(ref mut w) => {
+                w.execute(&self.table, table_manager)
+            }
         }
     }
 }
@@ -200,17 +202,15 @@ impl InsertStmt {
     pub fn execute(&mut self, table_manager: &mut TableManager) -> Result<(), String> {
         let meta = table_manager.get_table_metadata(&self.table)?;
         if self.fields.len() == 1 && self.fields.first().unwrap() == "*" {
-            self.fields = meta
-                .fields
-                .iter()
-                .map(|f| f.data_def.field_name.to_string())
-                .collect();
+            self.fields = meta.fields
+                              .iter()
+                              .map(|f| f.data_def.field_name.to_string())
+                              .collect();
         } else {
-            match self
-                .fields
-                .iter()
-                .filter(|f| meta.get_field_metadata(f).is_err())
-                .next()
+            match self.fields
+                      .iter()
+                      .filter(|f| meta.get_field_metadata(f).is_err())
+                      .next()
             {
                 None => {}
                 Some(field) => {
@@ -238,18 +238,65 @@ impl InsertStmt {
 
 #[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct WhereExpr {
-    condition_cluster: Vec<(LogicalOperator, ConditionCluster)>,
+    condition_cluster: Vec<ConditionCluster>,
 }
 
 impl WhereExpr {
-    pub(crate) fn new(condition_exprs: Vec<(LogicalOperator, ConditionCluster)>) -> WhereExpr {
+    pub(crate) fn new(condition_exprs: Vec<ConditionCluster>) -> WhereExpr {
         WhereExpr {
             condition_cluster: condition_exprs,
         }
     }
 
-    fn execute(&self, table: &mut Box<dyn Table>) -> Vec<RowBytes> {
-        table.find_by_condition_clusters(&self.condition_cluster)
+    fn execute(&mut self, table_name: &str, table_manager: &mut TableManager) -> Vec<RowBytes> {
+        let mut index_scan = false;
+        self.condition_cluster.sort_by(|c1, c2|{
+            let indexed1 = c1.iter()
+                             .any(|c| c.find_index(table_name, table_manager).is_some()).to_u8();
+
+            let indexed2 = c2.iter()
+                             .any(|c| c.find_index(table_name, table_manager).is_some()).to_u8();
+            index_scan = (indexed1 | indexed2) == 1;
+            indexed2.cmp(&indexed1)
+        } );
+
+        if index_scan {
+            let mut global_result = vec![];
+            let mut last_op: Option<LogicalOperator> = None;
+            for cluster in self.condition_cluster.iter() {
+                let table = match cluster.iter().filter_map(|c| c.find_index(table_name, table_manager)).next() {
+                    None => {
+                        table_manager.get_tables(table_name).unwrap().first_mut().unwrap()
+                    }
+                    Some(mut index) => {
+                        index
+                    }
+                };
+
+                let local_result = table.find_by_condition_cluster(cluster);
+                if last_op.is_none() || last_op.clone().unwrap().combine(cluster.logical_operator) == LogicalOperator::OR {
+                    global_result.extend(local_result.into_iter());
+                    if last_op.is_none() {
+                        last_op = Some(cluster.logical_operator);
+                    } else {
+                        last_op = Some(last_op.unwrap().combine(cluster.logical_operator))
+                    }
+                } else {
+                    let set: HashSet<RowBytes> = HashSet::from_iter(global_result.into_iter());
+                    global_result = vec![];
+                    for r in local_result {
+                        if set.contains(&r) {
+                            global_result.push(r);
+                        }
+                    }
+                }
+            };
+
+            global_result
+        } else {
+            // full scan
+            table_manager.get_tables(table_name).unwrap().first_mut().unwrap().find_by_condition_clusters(&self.condition_cluster)
+        }
     }
 }
 
@@ -451,11 +498,6 @@ impl FieldDefinition {
 }
 
 #[derive(PartialEq, PartialOrd, Debug)]
-pub(crate) struct IndexCreationStmt {
-    field: String,
-}
-
-#[derive(PartialEq, PartialOrd, Debug)]
 pub(crate) struct OrderByCluster {
     pub(crate) order_by_exprs: Vec<OrderByExpr>,
 }
@@ -478,18 +520,87 @@ impl OrderByExpr {
     }
 }
 
-#[derive(PartialEq, Debug, PartialOrd)]
-pub(crate) struct ConditionCluster {
-    pub conditions: Vec<ConditionExpr>,
+#[derive(PartialEq, Debug, PartialOrd, Clone)]
+pub enum Condition {
+    Cluster(ConditionCluster),
+    Expr(ConditionExpr)
 }
 
-impl ConditionCluster {
-    pub(crate) fn new(conditions: Vec<ConditionExpr>) -> ConditionCluster {
-        ConditionCluster { conditions }
+impl Condition {
+    pub fn unwrap_as_expr(&self) -> Result<&ConditionExpr, String> {
+        match self {
+            Condition::Cluster(_) => {Err(String::from("The current condition is not an Expr!"))}
+            Condition::Expr(e) => {Ok(e)}
+        }
+    }
+
+    pub fn unwrap_as_cluster(&self) -> Result<&ConditionCluster, String> {
+        match self {
+            Condition::Cluster(c) => {Ok(c)}
+            Condition::Expr(_) => {Err(String::from("The current condition is not a Cluster!"))}
+        }
+    }
+
+    pub fn is_expr(&self) -> bool {
+        match self {
+            Condition::Cluster(_) => {false}
+            Condition::Expr(_) => {
+                true
+            }
+        }
+    }
+
+    pub fn get_field_max_size(&self, table_meta: &TableStructureMetadata) -> usize{
+        let mut max_size: usize = 0;
+        match self {
+            Condition::Cluster(cluster) => {
+                for condition in cluster.iter() {
+                    max_size = max(max_size, condition.get_field_max_size(table_meta));
+                }
+            }
+            Condition::Expr(e) => {
+                max_size = max(max_size, table_meta.get_field_metadata(&e.field).unwrap().size);
+            }
+        }
+        max_size
+    }
+
+    pub fn find_index<'a>(&'a self, table_name: &str, table_manager: &'a TableManager) -> Option<&Box<dyn Table>> {
+        let mut has_indexed: Option<&Box<dyn Table>> = None;
+        match self {
+            Condition::Cluster(cluster) => {
+                for condition in cluster.iter() {
+                    has_indexed = condition.find_index(table_name, table_manager);
+                    if has_indexed.is_some() {
+                        break;
+                    }
+                }
+            }
+            Condition::Expr(e) => {
+                has_indexed = table_manager.find_index_for_field(table_name, &e.field);
+            }
+        }
+        has_indexed
     }
 }
 
-#[derive(PartialEq, Debug, PartialOrd)]
+#[derive(PartialEq, Debug, PartialOrd, Clone)]
+pub(crate) struct ConditionCluster {
+    pub logical_operator: LogicalOperator,
+    pub conditions: Vec<Condition>,
+}
+
+impl ConditionCluster {
+    pub(crate) fn new(logical_operator: LogicalOperator, conditions: Vec<Condition>) -> ConditionCluster {
+        ConditionCluster { logical_operator, conditions }
+    }
+
+    pub fn iter(&self) -> Iter<Condition> {
+        self.conditions.iter()
+    }
+}
+
+#[derive(PartialEq, Debug, PartialOrd, Clone)]
 pub(crate) struct ConditionExpr {
     pub logical_operator: LogicalOperator,
     pub field: String,
@@ -544,7 +655,7 @@ impl TryFrom<&str> for Order {
     }
 }
 
-#[derive(PartialEq, PartialOrd, Debug)]
+#[derive(PartialEq, PartialOrd, Debug, Clone, Copy)]
 pub(crate) enum Operator {
     EQUALS(bool),
     GT,
@@ -568,15 +679,15 @@ impl LogicalOperator {
         }
     }
 
-    pub fn is_and(&self) -> bool {
+    pub fn combine(&self, other: LogicalOperator) -> LogicalOperator {
         match self {
-            LogicalOperator::OR => false,
-            LogicalOperator::AND => true,
+            LogicalOperator::OR => {
+                LogicalOperator::OR
+            }
+            LogicalOperator::AND => {
+                other
+            }
         }
-    }
-
-    pub fn is_or(&self) -> bool {
-        !self.is_and()
     }
 }
 
@@ -629,14 +740,13 @@ impl TryFrom<String> for Operator {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Value {
     INTEGER(i32),
     FLOAT(f32),
     BOOLEAN(bool),
     STRING(String),
     ARRAY(Vec<Value>),
-    SelectStmt(SelectStmt),
 }
 
 impl PartialEq for Value {
@@ -647,7 +757,6 @@ impl PartialEq for Value {
             Value::BOOLEAN(b) => *b == other.unwrap_into_bool().unwrap(),
             Value::STRING(s) => s == other.unwrap_as_string().unwrap(),
             Value::ARRAY(a) => a == other.unwrap_as_array().unwrap(),
-            Value::SelectStmt(_) => other.is_select_stmt(),
         }
     }
 }
@@ -660,7 +769,6 @@ impl PartialOrd for Value {
             Value::BOOLEAN(b) => b.partial_cmp(&other.unwrap_into_bool().unwrap()),
             Value::STRING(s) => s.partial_cmp(&other.unwrap_as_string().unwrap()),
             Value::ARRAY(_) => None,
-            Value::SelectStmt(_) => None,
         }
     }
 }
@@ -673,7 +781,6 @@ impl Value {
             (Value::STRING(_), Value::STRING(_)) => true,
             (Value::ARRAY(_), Value::ARRAY(_)) => true,
             (Value::BOOLEAN(_), Value::BOOLEAN(_)) => true,
-            (Value::SelectStmt(_), Value::SelectStmt(_)) => true,
             _ => false,
         }
     }
@@ -710,13 +817,6 @@ impl Value {
         match self {
             Value::BOOLEAN(v) => Ok(*v),
             _ => Err("Current Value is not a Boolean."),
-        }
-    }
-
-    pub fn is_select_stmt(&self) -> bool {
-        match self {
-            Value::SelectStmt(_) => true,
-            _ => false,
         }
     }
 
@@ -788,7 +888,6 @@ impl Value {
                 s.push(']');
                 s
             }
-            Value::SelectStmt(_) => String::new(),
         }
     }
 }

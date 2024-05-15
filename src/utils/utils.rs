@@ -1,6 +1,6 @@
 use std::{fs, ptr};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[macro_export]
 macro_rules! to_u8_array {
@@ -51,33 +51,6 @@ pub(crate) fn copy<T>(src: *const T, dst: *mut T, count: usize) {
     }
 }
 
-pub(crate) fn indent(level: usize) {
-    for _ in 0..level {
-        print!(" ")
-    }
-}
-
-pub(crate) fn is_folder_empty(folder_path: &Path) -> bool {
-    match fs::read_dir(folder_path) {
-        Ok(entries) => {
-            for entry in entries {
-                if let Ok(_) = entry {
-                    return false;
-                }
-            }
-            true
-        }
-        Err(_) => true,
-    }
-}
-
-pub(crate) fn is_file_exists(folder_path: &Path) -> bool {
-    match fs::metadata(folder_path) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
-}
-
 pub(crate) fn u8_array_to_string(array: &[u8]) -> String {
     let end = array.iter().position(|c| *c == 0).unwrap_or(array.len());
     String::from_utf8_lossy(&array[..end]).to_string()
@@ -90,8 +63,8 @@ pub(crate) fn list_files_of_folder(
         Ok(entries) => {
             let mut files: Vec<(OsString, PathBuf)> = vec![];
             for entry in entries {
-                if let Ok(dirEntry) = entry {
-                    files.push((dirEntry.file_name(), dirEntry.path()));
+                if let Ok(dir_entry) = entry {
+                    files.push((dir_entry.file_name(), dir_entry.path()));
                 }
             }
 
