@@ -262,7 +262,7 @@ impl WhereExpr {
 
         if index_scan {
             let mut global_result = vec![];
-            let mut last_op = LogicalOperator::OR;
+            let mut last_op: Option<LogicalOperator> = None;
             for cluster in self.condition_cluster.iter() {
                 let table = match cluster.iter().filter_map(|c| c.find_index(table_name, table_manager)).next() {
                     None => {
@@ -274,9 +274,13 @@ impl WhereExpr {
                 };
 
                 let local_result = table.find_by_condition_cluster(cluster);
-                if last_op == LogicalOperator::OR {
+                if last_op.is_none() || last_op.clone().unwrap().combine(cluster.logical_operator) == LogicalOperator::OR {
                     global_result.extend(local_result.into_iter());
-                    last_op = cluster.logical_operator;
+                    if last_op.is_none() {
+                        last_op = Some(cluster.logical_operator);
+                    } else {
+                        last_op = Some(last_op.unwrap().combine(cluster.logical_operator))
+                    }
                 } else {
                     let set: HashSet<RowBytes> = HashSet::from_iter(global_result.into_iter());
                     global_result = vec![];
