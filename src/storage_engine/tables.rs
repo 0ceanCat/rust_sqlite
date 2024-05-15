@@ -8,7 +8,7 @@ use std::ptr;
 use std::ptr::null_mut;
 use std::rc::Rc;
 
-use crate::sql_engine::sql_structs::{Condition, ConditionCluster, ConditionExpr, DataType, LogicalOperator, Value};
+use crate::sql_engine::sql_structs::{Condition, ConditionCluster, ConditionExpr, DataType, LogicalOperator, Operator, Value};
 use crate::storage_engine::common::{RowBytes, RowToInsert, TableStructureMetadata};
 use crate::storage_engine::config::*;
 use crate::storage_engine::cursor::{ReadCursor, WriteReadCursor};
@@ -76,7 +76,7 @@ impl Table for BtreeTable {
 
         let (_, key_value) = key.unwrap();
 
-        let cursor = self.table_find_by_key(key_value);
+        let cursor = self.table_find_by_key(key_value, Operator::EQUALS(false));
         let page_index = cursor.page_index;
         let cell_index = cursor.cell_index;
 
@@ -275,7 +275,8 @@ impl BtreeTable {
 
         if exprs.first().unwrap().field == self.key_field_name {
             println!("Index scan for field `{}`", self.key_field_name);
-            cursor = self.table_find_by_key(&exprs.first().unwrap().value);
+            let first_expr = exprs.first().unwrap();
+            cursor = self.table_find_by_key(&first_expr.value, first_expr.operator);
         } else {
             cursor = self.find_smallest_or_biggest_key(false);
         }
@@ -464,14 +465,14 @@ impl BtreeTable {
         row.serialize_row(self.pager.get_leaf_node_value(page, cell_index));
     }
 
-    pub(crate) fn table_find_by_key(&self, key: &Value) -> WriteReadCursor {
+    pub(crate) fn table_find_by_key(&self, key: &Value, operator: Operator) -> WriteReadCursor {
         unsafe {
             let s_ptr: &mut Self = std::mem::transmute(self as *const Self);
 
             let node_type = (*s_ptr).pager.get_node_type_by_index(self.root_page_index);
             match node_type {
-                NodeType::Internal => (*s_ptr).internal_node_find(self.root_page_index, &key),
-                NodeType::Leaf => (*s_ptr).leaf_node_find(self.root_page_index, &key),
+                NodeType::Internal => (*s_ptr).internal_node_find(self.root_page_index, &key, operator),
+                NodeType::Leaf => (*s_ptr).leaf_node_find(self.root_page_index, &key, operator),
             }
         }
     }
@@ -491,7 +492,7 @@ impl BtreeTable {
         }
     }
 
-    fn leaf_node_find(&mut self, page_index: usize, key: &Value) -> WriteReadCursor {
+    fn leaf_node_find(&mut self, page_index: usize, key: &Value, operator: Operator) -> WriteReadCursor {
         let node = self.pager.get_or_create_page(page_index);
         let cells_num = BtreePager::get_leaf_node_num_cells(node);
 
@@ -502,7 +503,7 @@ impl BtreeTable {
             let key_at_index = self
                 .pager
                 .get_leaf_node_cell_key(node, index, &self.key_type);
-            if *key == key_at_index {
+            if operator.operate(key, &key_at_index) {
                 return WriteReadCursor::at(self, page_index, index);
             }
             if *key < key_at_index {
@@ -573,14 +574,14 @@ impl BtreeTable {
         }
     }
 
-    fn internal_node_find(&mut self, page_index: usize, key: &Value) -> WriteReadCursor {
+    fn internal_node_find(&mut self, page_index: usize, key: &Value, operator: Operator) -> WriteReadCursor {
         let node = self.pager.get_or_create_page(page_index);
         let cell_index = self.internal_node_find_child(node, key);
         let child_index = BtreePager::get_internal_node_child(node, cell_index);
         let child = self.pager.get_or_create_page(child_index);
         match BtreePager::get_node_type(child) {
-            NodeType::Leaf => self.leaf_node_find(child_index, key),
-            NodeType::Internal => self.internal_node_find(child_index, key),
+            NodeType::Leaf => self.leaf_node_find(child_index, key, operator),
+            NodeType::Internal => self.internal_node_find(child_index, key, operator),
         }
     }
 

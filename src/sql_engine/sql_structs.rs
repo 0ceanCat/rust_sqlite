@@ -655,7 +655,7 @@ impl TryFrom<&str> for Order {
     }
 }
 
-#[derive(PartialEq, PartialOrd, Debug, Clone)]
+#[derive(PartialEq, PartialOrd, Debug, Clone, Copy)]
 pub(crate) enum Operator {
     EQUALS(bool),
     GT,
