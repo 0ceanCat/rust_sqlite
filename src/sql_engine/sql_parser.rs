@@ -253,16 +253,18 @@ impl<'a> WhereStmtParser<'a> {
                 logical_op = LogicalOperator::try_from(self.sql_parser.read_token()?.as_str())?;
             }
             conditions.push(Condition::Expr(self.parse_expr(logical_op)?));
-            if self.sql_parser.current_char() == ')' {
-                break;
-            }
-            
+
             if par && self.sql_parser.starts_with(OR) {
                 self.sql_parser.position += OR.len();
                 conditions.push(Condition::Cluster(self.parse_condition_cluster(LogicalOperator::OR)?));
             } else if self.sql_parser.starts_with(OR) {
                 break
             }
+
+            if self.sql_parser.current_char() == ')' {
+                break;
+            }
+
             more_than_one = true;
         }
 
