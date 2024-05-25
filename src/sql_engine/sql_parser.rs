@@ -1,5 +1,5 @@
-use crate::sql_engine::keywords::*;
 use crate::sql_engine::sql_structs::{Condition, ConditionCluster, ConditionExpr, CreateStmt, DataType, FieldDefinition, InsertStmt, LogicalOperator, Operator, Order, OrderByCluster, OrderByExpr, SelectStmt, SqlStmt, Value, WhereExpr};
+use crate::sql_engine::tokenizer::*;
 use crate::storage_engine::config::FIELD_NAME_SIZE;
 
 static BLANK_SYMBOLS: [char; 4] = [' ', '\t', '\n', '\r'];
@@ -652,10 +652,6 @@ impl<'a> ValueParser<'a> {
             }
             _ => Err(String::from("Integer parse failed")),
         }
-    }
-
-    fn char_to_integer(c: char) -> i32 {
-        c as i32 - 0x30
     }
 }
 
