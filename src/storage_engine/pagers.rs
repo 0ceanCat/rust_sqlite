@@ -4,7 +4,7 @@ use std::os::windows::fs::FileExt;
 use std::process::exit;
 use std::ptr;
 
-use crate::sql_engine::sql_structs::{DataType, Operator, Value};
+use crate::sql_engine::sql_structs::{DataType, Value};
 use crate::storage_engine::common::Page;
 use crate::storage_engine::config::*;
 use crate::storage_engine::enums::NodeType;
@@ -433,18 +433,18 @@ impl BtreePager {
 
     unsafe fn set_key(key_size: usize, key: &Value, dst: *mut u8) {
         match key {
-            Value::STRING(string) => {
+            Value::TEXT(string) => {
                 let mut bytes = vec![0; key_size];
                 ptr::copy_nonoverlapping(string.as_ptr(), bytes.as_mut_ptr(), string.len());
                 ptr::copy_nonoverlapping(bytes.as_ptr(), dst, key_size);
             }
-            Value::INTEGER(i) => {
+            Value::INT(i) => {
                 ptr::copy_nonoverlapping(i as *const i32 as *const u8, dst, key_size);
             }
             Value::FLOAT(f) => {
                 ptr::copy_nonoverlapping(f as *const f32 as *const u8, dst, key_size);
             }
-            Value::BOOLEAN(b) => {
+            Value::BOOL(b) => {
                 ptr::copy_nonoverlapping(b as *const bool as *const u8, dst, key_size);
             }
             _ => {}

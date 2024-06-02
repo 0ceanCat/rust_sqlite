@@ -268,7 +268,7 @@ impl WhereExpr {
                     None => {
                         table_manager.get_tables(table_name).unwrap().first_mut().unwrap()
                     }
-                    Some(mut index) => {
+                    Some(index) => {
                         index
                     }
                 };
@@ -742,20 +742,20 @@ impl TryFrom<String> for Operator {
 
 #[derive(Debug, Clone)]
 pub enum Value {
-    INTEGER(i32),
+    INT(i32),
     FLOAT(f32),
-    BOOLEAN(bool),
-    STRING(String),
+    BOOL(bool),
+    TEXT(String),
     ARRAY(Vec<Value>),
 }
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match self {
-            Value::INTEGER(i) => *i == other.unwrap_as_int().unwrap(),
+            Value::INT(i) => *i == other.unwrap_as_int().unwrap(),
             Value::FLOAT(f) => *f == other.unwrap_as_float().unwrap(),
-            Value::BOOLEAN(b) => *b == other.unwrap_into_bool().unwrap(),
-            Value::STRING(s) => s == other.unwrap_as_string().unwrap(),
+            Value::BOOL(b) => *b == other.unwrap_into_bool().unwrap(),
+            Value::TEXT(s) => s == other.unwrap_as_string().unwrap(),
             Value::ARRAY(a) => a == other.unwrap_as_array().unwrap(),
         }
     }
@@ -764,10 +764,10 @@ impl PartialEq for Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self {
-            Value::INTEGER(i) => i.partial_cmp(&other.unwrap_as_int().unwrap()),
+            Value::INT(i) => i.partial_cmp(&other.unwrap_as_int().unwrap()),
             Value::FLOAT(f) => f.partial_cmp(&other.unwrap_as_float().unwrap()),
-            Value::BOOLEAN(b) => b.partial_cmp(&other.unwrap_into_bool().unwrap()),
-            Value::STRING(s) => s.partial_cmp(&other.unwrap_as_string().unwrap()),
+            Value::BOOL(b) => b.partial_cmp(&other.unwrap_into_bool().unwrap()),
+            Value::TEXT(s) => s.partial_cmp(&other.unwrap_as_string().unwrap()),
             Value::ARRAY(_) => None,
         }
     }
@@ -776,18 +776,18 @@ impl PartialOrd for Value {
 impl Value {
     pub(crate) fn are_same_variant(a: &Value, b: &Value) -> bool {
         match (a, b) {
-            (Value::INTEGER(_), Value::INTEGER(_)) => true,
+            (Value::INT(_), Value::INT(_)) => true,
             (Value::FLOAT(_), Value::FLOAT(_)) => true,
-            (Value::STRING(_), Value::STRING(_)) => true,
+            (Value::TEXT(_), Value::TEXT(_)) => true,
             (Value::ARRAY(_), Value::ARRAY(_)) => true,
-            (Value::BOOLEAN(_), Value::BOOLEAN(_)) => true,
+            (Value::BOOL(_), Value::BOOL(_)) => true,
             _ => false,
         }
     }
 
     pub fn unwrap_as_int(&self) -> Result<i32, &str> {
         match self {
-            Value::INTEGER(v) => Ok(*v),
+            Value::INT(v) => Ok(*v),
             _ => Err("Current Value is not an Integer."),
         }
     }
@@ -801,7 +801,7 @@ impl Value {
 
     pub fn unwrap_as_string(&self) -> Result<&String, &str> {
         match self {
-            Value::STRING(v) => Ok(v),
+            Value::TEXT(v) => Ok(v),
             _ => Err("Current Value is not a String."),
         }
     }
@@ -815,15 +815,8 @@ impl Value {
 
     pub fn unwrap_into_bool(&self) -> Result<bool, &str> {
         match self {
-            Value::BOOLEAN(v) => Ok(*v),
+            Value::BOOL(v) => Ok(*v),
             _ => Err("Current Value is not a Boolean."),
-        }
-    }
-
-    pub(crate) fn is_array(&self) -> bool {
-        match self {
-            Value::ARRAY(_) => true,
-            _ => false,
         }
     }
 
@@ -838,7 +831,7 @@ impl Value {
                     let mut bytes = Vec::<u8>::with_capacity(*size);
                     ptr::copy_nonoverlapping(src, bytes.as_mut_ptr(), *size);
                     bytes.set_len(*size);
-                    Value::STRING(u8_array_to_string(bytes.as_slice()))
+                    Value::TEXT(u8_array_to_string(bytes.as_slice()))
                 }
                 DataType::INTEGER => {
                     let key: i32 = 0;
@@ -847,7 +840,7 @@ impl Value {
                         &key as *const i32 as *mut u8,
                         key_type.get_size(),
                     );
-                    Value::INTEGER(key)
+                    Value::INT(key)
                 }
                 DataType::FLOAT => {
                     let key: f32 = 0.0;
@@ -865,7 +858,7 @@ impl Value {
                         &key as *const bool as *mut u8,
                         key_type.get_size(),
                     );
-                    Value::BOOLEAN(key)
+                    Value::BOOL(key)
                 }
             }
         }
@@ -873,10 +866,10 @@ impl Value {
 
     pub fn to_string(&self) -> String {
         match self {
-            Value::INTEGER(i) => i.to_string(),
+            Value::INT(i) => i.to_string(),
             Value::FLOAT(f) => f.to_string(),
-            Value::BOOLEAN(b) => b.to_string(),
-            Value::STRING(s) => s.to_string(),
+            Value::BOOL(b) => b.to_string(),
+            Value::TEXT(s) => s.to_string(),
             Value::ARRAY(a) => {
                 let mut s = String::new();
                 s.push('[');

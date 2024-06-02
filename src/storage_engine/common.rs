@@ -2,7 +2,6 @@ extern crate core;
 
 use std::{fs, ptr};
 use std::collections::HashMap;
-use std::fmt::format;
 use std::io::Write;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -312,7 +311,7 @@ impl<'a> RowToInsert<'a> {
             for (name, value) in field_value_pair {
                 let field_meta = table_meta.get_field_metadata(name).unwrap();
                 match value {
-                    Value::INTEGER(i) => {
+                    Value::INT(i) => {
                         copy_nonoverlapping(
                             i as *const i32 as *const u8,
                             buf.add(field_meta.offset),
@@ -326,14 +325,14 @@ impl<'a> RowToInsert<'a> {
                             field_meta.size,
                         );
                     }
-                    Value::BOOLEAN(b) => {
+                    Value::BOOL(b) => {
                         copy_nonoverlapping(
                             b as *const bool as *const u8,
                             buf.add(field_meta.offset),
                             field_meta.size,
                         );
                     }
-                    Value::STRING(s) => {
+                    Value::TEXT(s) => {
                         copy_nonoverlapping(s.as_ptr(), buf.add(field_meta.offset), s.len());
                     }
                     Value::ARRAY(_) => {}
@@ -363,7 +362,7 @@ impl RowValues {
     }
 }
 
-pub fn new_input_buffer() -> &'static str {
+pub fn new_input_buffer() -> String {
     let mut input = String::new();
     print!("sql>");
     loop {
@@ -374,7 +373,7 @@ pub fn new_input_buffer() -> &'static str {
         }
         print!(">")
     }
-    input.to_lowercase().leak().trim()
+    input.to_lowercase().leak().trim().to_string()
 }
 
 pub struct TableStructureMetadata {
