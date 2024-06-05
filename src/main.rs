@@ -9,7 +9,7 @@ mod utils;
 fn main() -> Result<(), String> {
     let mut table_manager = TableManager::new();
     loop {
-        let input = String::from("select a,b,c from user where a=1 and b=2 order by a, b desc;");//new_input_buffer();
+        let input= new_input_buffer();
 
         if input == "flush;" {
             table_manager.flash_to_disk();

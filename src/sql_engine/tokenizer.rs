@@ -150,7 +150,7 @@ impl Tokenizer {
                 let typ = match TOKEN_REGEX.captures(&self.sql[self.position..]).unwrap() {
                     caps if caps.name("ALL_COLUMN").is_some() => TokenType::AllColumn,
                     caps if caps.name("NUMBER").is_some() => TokenType::Number,
-                    caps if caps.name("IDENT").is_some() => {
+                        caps if caps.name("IDENT").is_some() => {
                         if KEYWORDS.contains(&token_str.to_uppercase().as_str()) {
                             TokenType::Keyword
                         } else {

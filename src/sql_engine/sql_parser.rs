@@ -346,17 +346,20 @@ impl CreateStmtParser {
                     tokenizer: &mut self.tokenizer,
                 }.parse()?;
 
-                let primary = self.tokenizer.next_token()?.value() == PRIMARY;
+                let primary = self.tokenizer.current_token().value() == PRIMARY;
+                let key= self.tokenizer.next_token()?.value() == KEY;
 
-                if primary {
+                if primary && key {
                     self.tokenizer.next_token()?;
+                } else if primary && !key {
+                    return Err(String::from("Do you mean PRIMARY KEY?"))
                 }
 
                 field_definitions.push(FieldDefinition::new(field, data_type, primary));
 
                 if self.tokenizer.current_token().token_type() == TokenType::COMMA {
-                    self.tokenizer.next_token()?;
-                } else if self.tokenizer.current_token().token_type() == TokenType::Rparen {
+                    continue
+                } else if [TokenType::Rparen, TokenType::EOF].contains(&self.tokenizer.current_token().token_type()) {
                     break;
                 } else {
                     return Err(String::from(
@@ -510,23 +513,25 @@ struct DataTypeParser<'a> {
 
 impl<'a> DataTypeParser<'a> {
     fn parse(&mut self) -> Result<DataType, String> {
-        let data_type = self.tokenizer.next_token()?.value();
+        let data_type = self.tokenizer.next_token()?.value().to_lowercase();
 
         if data_type == "text" {
             let mut size: usize = 255;
             if self.tokenizer.next_token()?.token_type() == TokenType::Lparen {
                 size = self.tokenizer.next_token()?.value().parse().unwrap_or(255);
-                if self.tokenizer.next_token()?.token_type() == TokenType::Rparen {
+                if self.tokenizer.next_token()?.token_type() != TokenType::Rparen {
                     return Err(String::from("Syntax error, expected a ')'."));
                 }
             }
 
+            self.tokenizer.next_token()?; // skip ")"
             Ok(DataType::TEXT(size))
         } else {
-            match data_type {
-                "integer" => Ok(DataType::INTEGER),
+            self.tokenizer.next_token()?;
+            match data_type.as_str() {
+                "int" => Ok(DataType::INTEGER),
                 "float" => Ok(DataType::FLOAT),
-                "boolean" => Ok(DataType::BOOLEAN),
+                "bool" => Ok(DataType::BOOLEAN),
                 _ => Err(format!("Unknown data type `{}` was found.", data_type)),
             }
         }
