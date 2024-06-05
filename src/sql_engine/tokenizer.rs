@@ -104,8 +104,8 @@ lazy_static! {
     };
     static ref TOKEN_REGEX: Regex = {
         let number = r"\b\d+(\.\d*)?\b";
-        let all_column = r"*";
-        let ident = r"\b[a-zA-Z_][a-zA-Z0-9_]*\b|*";
+        let all_column = r"\*";
+        let ident = r"\b[a-zA-Z_][a-zA-Z0-9_]*\b";
         let boolean = r"true|false|True|False|TRUE|FALSE";
         let string_literal = r"'[^']*'";
         let operators = OPERATORS.iter().map(|&op| regex::escape(op)).collect::<Vec<_>>().join("|");
@@ -117,8 +117,8 @@ lazy_static! {
         let rparen = r"\)";
         let left_bracket = r"\[";
         let right_bracket = r"\]";
-        let mismatch = r".";
-        let eof = r";";
+        let mismatch = r"\.";
+        let eof = r"\;";
 
         let regex_str = format!(
             "(?P<NUMBER>{})|(?P<ALL_COLUMN>{})|(?P<IDENT>{})|(?P<BOOLEAN>{})|(?P<STRING_LITERAL>{})|(?P<OPERATOR>{})|(?P<LOGICAL_OPERATOR>{})|(?P<DATA_TYPE>{})|(?P<COMMA>{})|(?P<LPAREN>{})|(?P<RPAREN>{})|(?P<LBRACKET>{})|(?P<RBRACKET>{})|(?P<SKIP>{})|(?P<MISMATCH>{})|(?P<EOF>{})",
@@ -132,7 +132,7 @@ lazy_static! {
 pub struct Tokenizer {
     current_token: Option<Token>,
     position: usize,
-    sql: String
+    sql: String,
 }
 
 impl Tokenizer {
@@ -140,13 +140,13 @@ impl Tokenizer {
         Tokenizer {
             current_token: None,
             position: 0,
-            sql
+            sql,
         }
     }
     pub fn next_token(&mut self) -> Result<&Token, String> {
         while self.position < self.sql.len() {
             if let Some(mat) = TOKEN_REGEX.find(&self.sql[self.position..]) {
-                let token_str = mat.as_str();
+                let mut token_str = mat.as_str();
                 let typ = match TOKEN_REGEX.captures(&self.sql[self.position..]).unwrap() {
                     caps if caps.name("ALL_COLUMN").is_some() => TokenType::AllColumn,
                     caps if caps.name("NUMBER").is_some() => TokenType::Number,
@@ -183,10 +183,10 @@ impl Tokenizer {
 
                 let token = Token {
                     token_type: typ,
-                    value: token_str.to_string(),
+                    value: if typ == TokenType::Keyword { token_str.to_uppercase() } else { token_str.to_string() },
                 };
                 self.current_token = Some(token);
-                return Ok(self.current_token())
+                return Ok(self.current_token());
             } else {
                 break;
             }
@@ -195,7 +195,7 @@ impl Tokenizer {
         Ok(self.current_token())
     }
 
-    pub fn current_token(&self) -> &Token{
+    pub fn current_token(&self) -> &Token {
         &self.current_token.as_ref().unwrap()
     }
 

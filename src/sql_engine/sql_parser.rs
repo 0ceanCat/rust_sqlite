@@ -41,21 +41,21 @@ struct SelectStmtParser {
 
 impl SelectStmtParser {
     fn parse(&mut self) -> Result<SelectStmt, String> {
-        let form = self.tokenizer.next_token()?;
+        let from = self.tokenizer.next_token()?;
 
-        if form.token_type() == TokenType::Keyword && form.value() == FROM {
+        if from.token_type() == TokenType::Keyword && from.value() == FROM {
             return Err(String::from("Syntax error, no selected columns found."));
         }
 
-
         let selected_fields = if self.tokenizer.current_token().token_type() == TokenType::AllColumn {
+            self.tokenizer.next_token()?; // skip FROM
             vec![String::from("*")]
         } else {
             self.parse_selected_fields()?
         };
 
         let table = self.tokenizer.next_token()?.value().into();
-
+        self.tokenizer.next_token()?;
         let where_stmt: Option<WhereExpr> =
             if !self.tokenizer.has_more() || self.tokenizer.current_token().value() == ORDER {
                 None
@@ -134,10 +134,8 @@ impl<'a> WhereStmtParser<'a> {
             condition_exprs.push(condition_expr);
             logical_op = None;
 
-            if self.tokenizer.has_more() || self.tokenizer.current_token().value() == ORDER {
-                if self.tokenizer.next_token()?.value() == BY {
-                    break;
-                }
+            if self.tokenizer.current_token().value() == ORDER {
+                break;
             }
 
             logical_op = Some(LogicalOperator::try_from(
@@ -174,6 +172,7 @@ impl<'a> WhereStmtParser<'a> {
         while self.tokenizer.has_more() && self.tokenizer.current_token().value() != ORDER {
             if more_than_one {
                 logical_op = LogicalOperator::try_from(self.tokenizer.current_token().value())?;
+                self.tokenizer.next_token()?;
             }
             conditions.push(Condition::Expr(self.parse_expr(logical_op)?));
 
@@ -190,7 +189,7 @@ impl<'a> WhereStmtParser<'a> {
             more_than_one = true;
         }
 
-        if  self.tokenizer.next_token()?.value() != BY {
+        if  self.tokenizer.has_more() && self.tokenizer.current_token().value() != ORDER {
             return Err(String::from("Do you mean ORDER BY?"))
         }
 
@@ -207,15 +206,18 @@ impl<'a> WhereStmtParser<'a> {
         &mut self,
         logical_operator: LogicalOperator,
     ) -> Result<ConditionExpr, String> {
-        let field = self.tokenizer.next_token()?.value().to_string();
+        let field = self.tokenizer.current_token().value().to_string();
+        self.tokenizer.next_token()?;
         let op = {
             OperatorParser {
                 tokenizer: &mut self.tokenizer,
             }.parse()?
         };
+        self.tokenizer.next_token()?;
         let v = ValueParser {
             tokenizer: &mut self.tokenizer,
         }.parse()?;
+        self.tokenizer.next_token()?;
         Ok(ConditionExpr::new(logical_operator, field, op, v))
     }
 }
@@ -385,23 +387,24 @@ struct OrderByExprParser<'a> {
 
 impl<'a> OrderByExprParser<'a> {
     pub(crate) fn parse(&mut self) -> Result<OrderByCluster, String> {
-        if self.tokenizer.current_token().value() == ORDER && self.tokenizer.next_token()?.value() == BY {
+        if self.tokenizer.current_token().value() != ORDER && self.tokenizer.next_token()?.value() != BY {
             return Err(format!(
                 "Syntax error, expect `order by`, but found {}",
                 self.tokenizer.current_token().value()
             ));
         }
+        self.tokenizer.next_token()?;
 
         let mut order_bys = Vec::<OrderByExpr>::new();
 
         while self.tokenizer.has_more() {
             let field = self.tokenizer.next_token()?.value().to_string();
             let order: Order;
-            self.tokenizer.next_token()?;
-            if !self.tokenizer.has_more() || self.tokenizer.current_token().token_type() == TokenType::COMMA {
+            if !self.tokenizer.has_more() || self.tokenizer.next_token()?.token_type() == TokenType::COMMA {
                 order = Order::ASC;
             } else {
                 order = Order::try_from(self.tokenizer.current_token().value())?;
+                self.tokenizer.next_token()?;
             }
             order_bys.push(OrderByExpr::new(field, order));
         }
