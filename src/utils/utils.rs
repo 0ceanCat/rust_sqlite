@@ -39,6 +39,17 @@ impl ToU8 for bool {
     }
 }
 
+pub trait ToInt {
+    fn to_int(&self) -> i32;
+}
+
+impl ToInt for char {
+    fn to_int(&self) -> i32 {
+        *self as i32 - 0x30
+    }
+}
+
+
 pub(crate) fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize) {
     unsafe {
         ptr::copy_nonoverlapping(src, dst, count);

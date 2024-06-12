@@ -1,149 +1,79 @@
-use crate::sql_engine::keywords::*;
 use crate::sql_engine::sql_structs::{Condition, ConditionCluster, ConditionExpr, CreateStmt, DataType, FieldDefinition, InsertStmt, LogicalOperator, Operator, Order, OrderByCluster, OrderByExpr, SelectStmt, SqlStmt, Value, WhereExpr};
+use crate::sql_engine::tokenizer::*;
 use crate::storage_engine::config::FIELD_NAME_SIZE;
 
-static BLANK_SYMBOLS: [char; 4] = [' ', '\t', '\n', '\r'];
-static TOKEN_SEPARATORS: [char; 7] = [' ', ',', '(', ')', '\t', '\n', '\r'];
-static OPERATORS_SYMBOLS: [char; 4] = ['>', '<', '=', '!'];
-
 #[derive(Clone)]
-pub struct SqlParser {
-    position: usize,
-    input: Vec<char>,
-}
+pub struct SqlParser {}
 
 impl SqlParser {
-    pub fn parse_sql(input_stream: &str) -> Result<SqlStmt, String> {
-        let vec = input_stream.chars().collect();
-        SqlParser {
-            position: 0,
-            input: vec,
-        }
-        .parse()
+    pub fn parse_sql(input_stream: String) -> Result<SqlStmt, String> {
+        SqlParser {}
+            .parse(input_stream)
     }
 
-    fn parse(&mut self) -> Result<SqlStmt, String> {
-        self.skip_white_spaces();
-
-        if self.starts_with(SELECT) {
-            let mut select_stmt_parser = SelectStmtParser { sql_parser: self };
+    fn parse(&mut self, input: String) -> Result<SqlStmt, String> {
+        let mut tokenizer = Tokenizer::new(input);
+        let first_token = tokenizer.next_token()?;
+        if first_token.token_type() != TokenType::Keyword {
+            return Err(String::from("Unknown sql statement."));
+        }
+        if first_token.value() == SELECT {
+            let mut select_stmt_parser = SelectStmtParser { tokenizer };
             let select_stmt = select_stmt_parser.parse()?;
             Ok(SqlStmt::SELECT(select_stmt))
-        } else if self.starts_with(INSERT_INTO) {
-            let mut insert_stmt_parser = InsertStmtParser { sql_parser: self };
+        } else if first_token.value() == INSERT {
+            let mut insert_stmt_parser = InsertStmtParser { tokenizer };
             let insert_stmt = insert_stmt_parser.parse()?;
             Ok(SqlStmt::INSERT(insert_stmt))
-        } else if self.starts_with(CREATE_TABLE) {
-            let mut create_stmt_parser = CreateStmtParser { sql_parser: self };
+        } else if first_token.value() == CREATE {
+            let mut create_stmt_parser = CreateStmtParser { tokenizer };
             let create_stmt = create_stmt_parser.parse()?;
             Ok(SqlStmt::CREATE(create_stmt))
         } else {
             Err(String::from("Unknown sql statement."))
         }
     }
-
-    fn skip_white_spaces(&mut self) {
-        while !self.is_end() && BLANK_SYMBOLS.contains(&self.current_char()) {
-            self.advance();
-        }
-    }
-
-    fn is_current_char_comma(&self) -> bool {
-        self.current_char() == ','
-    }
-
-    fn is_end(&self) -> bool {
-        self.position >= self.input.len() || self.current_char() == ';'
-    }
-
-    fn read_token(&mut self) -> Result<String, String> {
-        self.skip_white_spaces();
-        let mut token = String::new();
-
-        while !self.is_end() && !TOKEN_SEPARATORS.contains(&self.current_char()) {
-            if OPERATORS_SYMBOLS.contains(&self.current_char()) {
-                break;
-            }
-            token.push(self.current_char());
-            self.advance();
-        }
-        self.skip_white_spaces();
-        Ok(token)
-    }
-
-    fn parse_table_name(&mut self) -> Result<String, String> {
-        let string = self.read_token()?;
-        if string.is_empty() {
-            return Err(String::from("Syntax error, table is not specified."));
-        }
-        Ok(string)
-    }
-
-    fn current_char(&self) -> char {
-        self.input[self.position]
-    }
-
-    fn advance(&mut self) {
-        self.position += 1
-    }
-
-    fn starts_with(&self, s: &str) -> bool {
-        let input = &self.input[self.position..];
-        if input.len() == 0 {
-            return false;
-        }
-        for (i, c) in s.char_indices() {
-            if input[i] != c {
-                return false;
-            }
-        }
-        true
-    }
 }
 
-struct SelectStmtParser<'a> {
-    sql_parser: &'a mut SqlParser,
+struct SelectStmtParser {
+    tokenizer: Tokenizer,
 }
 
-impl<'a> SelectStmtParser<'a> {
+impl SelectStmtParser {
     fn parse(&mut self) -> Result<SelectStmt, String> {
-        self.sql_parser.position += SELECT.len();
-        self.sql_parser.skip_white_spaces();
+        let from = self.tokenizer.next_token()?;
 
-        if self.sql_parser.starts_with(FROM) {
+        if from.token_type() == TokenType::Keyword && from.value() == FROM {
             return Err(String::from("Syntax error, no selected columns found."));
         }
 
-        let selected_fields = self.parse_selected_fields()?;
+        let selected_fields = if self.tokenizer.current_token().token_type() == TokenType::AllColumn {
+            self.tokenizer.next_token()?; // skip FROM
+            vec![String::from("*")]
+        } else {
+            self.parse_selected_fields()?
+        };
 
-        self.sql_parser.position += FROM.len();
-
-        self.sql_parser.skip_white_spaces();
-
-        let table = self.sql_parser.parse_table_name()?;
-
-        self.sql_parser.skip_white_spaces();
-
+        let table = self.tokenizer.next_token()?.value().into();
+        self.tokenizer.next_token()?;
         let where_stmt: Option<WhereExpr> =
-            if self.sql_parser.is_end() || self.sql_parser.starts_with(ORDER_BY) {
+            if !self.tokenizer.has_more() || self.tokenizer.current_token().value() == ORDER {
                 None
             } else {
                 Some(
                     WhereStmtParser {
-                        sql_parser: self.sql_parser,
-                    }
-                    .parse()?,
+                        tokenizer: &mut self.tokenizer
+                    }.parse()?,
                 )
             };
 
-        let order_by_stmt: Option<OrderByCluster> = if self.sql_parser.is_end() {
+        let order_by_stmt: Option<OrderByCluster> = if !self.tokenizer.has_more() {
             None
         } else {
             Some(
                 OrderByExprParser {
-                    sql_parser: self.sql_parser,
-                }
-                .parse()?,
+                    tokenizer: &mut self.tokenizer,
+                }.parse()?,
             )
         };
 
@@ -157,28 +87,21 @@ impl<'a> SelectStmtParser<'a> {
 
     fn parse_selected_fields(&mut self) -> Result<Vec<String>, String> {
         let mut fields = Vec::<String>::new();
-        self.sql_parser.skip_white_spaces();
+        while self.tokenizer.has_more() && self.tokenizer.current_token().value() != FROM {
+            let field_token = self.tokenizer.current_token();
+            let field_name = field_token.value().to_string();
 
-        while !self.sql_parser.is_end() && !&self.sql_parser.starts_with(FROM) {
-            self.sql_parser.skip_white_spaces();
-            let field = self.sql_parser.read_token()?;
-
-            if fields.contains(&field) {
-                return Err(format!("Column `{field}` has already be selected."));
+            if fields.contains(&field_name) {
+                return Err(format!("Column `{field_name}` has already be selected."));
             }
 
-            if field != "*" {
-                check_key_word(&field)?;
-                check_valid_field_name(&field)?;
-            }
-            fields.push(field);
+            fields.push(field_name);
 
-            self.sql_parser.skip_white_spaces();
+            let next = self.tokenizer.next_token()?;
 
-            if self.sql_parser.is_current_char_comma() {
-                self.sql_parser.advance(); // skip ','
-                self.sql_parser.skip_white_spaces();
-            } else if !&self.sql_parser.starts_with(FROM) {
+            if next.token_type() == TokenType::COMMA {
+                self.tokenizer.next_token()?; // skip ','
+            } else if next.value() != FROM {
                 return Err(String::from(
                     "Syntax error, there must be a ',' between two selected fields.",
                 ));
@@ -190,34 +113,35 @@ impl<'a> SelectStmtParser<'a> {
 }
 
 struct WhereStmtParser<'a> {
-    sql_parser: &'a mut SqlParser,
+    tokenizer: &'a mut Tokenizer,
 }
 
 impl<'a> WhereStmtParser<'a> {
     fn parse(&mut self) -> Result<WhereExpr, String> {
-        if !self.sql_parser.starts_with(WHERE) {
+        if self.tokenizer.current_token().value() != WHERE {
             return Err(format!(
                 "Syntax error, expected a Where statement, but a token `{}` was found.",
-                self.sql_parser.read_token()?
+                self.tokenizer.current_token().value()
             ));
         }
-        self.sql_parser.position += WHERE.len();
-        self.sql_parser.skip_white_spaces();
+        self.tokenizer.next_token()?;
 
         let mut condition_exprs = Vec::<ConditionCluster>::new();
         let mut logical_op = Some(LogicalOperator::AND);
 
-        while !self.sql_parser.is_end() {
+        while self.tokenizer.has_more() {
             let condition_expr = self.parse_condition_cluster(logical_op.unwrap())?;
             condition_exprs.push(condition_expr);
             logical_op = None;
 
-            if self.sql_parser.is_end() || self.sql_parser.starts_with(ORDER_BY) {
+            if self.tokenizer.current_token().value() == ORDER {
+                break;
+            } else if self.tokenizer.current_token().token_type() == TokenType::EOF {
                 break;
             }
 
             logical_op = Some(LogicalOperator::try_from(
-                self.sql_parser.read_token()?.as_str(),
+                self.tokenizer.current_token().value(),
             )?);
         }
 
@@ -237,44 +161,46 @@ impl<'a> WhereStmtParser<'a> {
     }
 
     fn parse_condition_cluster(&mut self, cluster_operator: LogicalOperator) -> Result<ConditionCluster, String> {
-        self.sql_parser.skip_white_spaces();
         let mut conditions = Vec::<Condition>::new();
         let mut more_than_one = false;
         let mut logical_op = LogicalOperator::AND;
         let mut par = false;
 
-        if self.sql_parser.current_char() == '(' {
-            self.sql_parser.advance(); //skip '('
+        if self.tokenizer.current_token().token_type() == TokenType::Lparen {
+            self.tokenizer.next_token()?; //skip '('
             par = true;
         }
 
-        while !self.sql_parser.is_end() && !self.sql_parser.starts_with(ORDER_BY) {
+        while self.tokenizer.has_more() && self.tokenizer.current_token().value() != ORDER {
             if more_than_one {
-                logical_op = LogicalOperator::try_from(self.sql_parser.read_token()?.as_str())?;
+                logical_op = LogicalOperator::try_from(self.tokenizer.current_token().value())?;
+                self.tokenizer.next_token()?;
             }
             conditions.push(Condition::Expr(self.parse_expr(logical_op)?));
 
-            if par && self.sql_parser.starts_with(OR) {
-                self.sql_parser.position += OR.len();
+            if par && self.tokenizer.current_token().value() == OR {
                 conditions.push(Condition::Cluster(self.parse_condition_cluster(LogicalOperator::OR)?));
-            } else if self.sql_parser.starts_with(OR) {
-                break
+            } else if self.tokenizer.current_token().value() == OR  {
+                break;
             }
 
-            if self.sql_parser.current_char() == ')' {
+            if self.tokenizer.current_token().token_type() == TokenType::Rparen {
                 break;
             }
 
             more_than_one = true;
         }
 
-        if par && self.sql_parser.current_char() != ')' {
-            return Err(format!("Syntax error, Where statement is incorrectly formatted, expected a ')' but found {}", self.sql_parser.current_char()));
-        } else if par {
-            self.sql_parser.advance(); //skip ')'
+        if  self.tokenizer.has_more() && self.tokenizer.current_token().value() != ORDER {
+            return Err(String::from("Do you mean ORDER BY?"))
         }
 
-        self.sql_parser.skip_white_spaces();
+        if par && self.tokenizer.current_token().token_type() != TokenType::Rparen {
+            return Err(format!("Syntax error, Where statement is incorrectly formatted, expected a ')' but found {}", self.tokenizer.current_token().value()));
+        } else if par {
+            self.tokenizer.next_token()?; //skip ')'
+        }
+
         Ok(ConditionCluster::new(cluster_operator, conditions))
     }
 
@@ -282,49 +208,42 @@ impl<'a> WhereStmtParser<'a> {
         &mut self,
         logical_operator: LogicalOperator,
     ) -> Result<ConditionExpr, String> {
-        self.sql_parser.skip_white_spaces();
-        let field = self.sql_parser.read_token()?;
-        check_key_word(&field)?;
-        check_valid_field_name(&field)?;
-
-        self.sql_parser.skip_white_spaces();
+        let field = self.tokenizer.current_token().value().to_string();
+        self.tokenizer.next_token()?;
         let op = {
             OperatorParser {
-                sql_parser: self.sql_parser,
-            }
-            .parse()?
+                tokenizer: &mut self.tokenizer,
+            }.parse()?
         };
-        self.sql_parser.skip_white_spaces();
+        self.tokenizer.next_token()?;
         let v = ValueParser {
-            sql_parser: self.sql_parser,
-        }
-        .parse()?;
-        self.sql_parser.skip_white_spaces();
+            tokenizer: &mut self.tokenizer,
+        }.parse()?;
+        self.tokenizer.next_token()?;
         Ok(ConditionExpr::new(logical_operator, field, op, v))
     }
 }
 
-struct InsertStmtParser<'a> {
-    sql_parser: &'a mut SqlParser,
+struct InsertStmtParser {
+    tokenizer: Tokenizer,
 }
 
-impl<'a> InsertStmtParser<'a> {
+impl InsertStmtParser {
     fn parse(&mut self) -> Result<InsertStmt, String> {
-        self.sql_parser.position += INSERT_INTO.len();
-        self.sql_parser.skip_white_spaces();
+        if self.tokenizer.next_token()?.value() != "INTO" {
+            return Err(String::from("Do you mean INERT INTO?"))
+        }
 
-        let table_name = self.sql_parser.parse_table_name()?;
-
-        self.sql_parser.skip_white_spaces();
+        let table_name = self.tokenizer.next_token()?.value().to_string();
 
         let fields = self.parse_inserted_fields()?;
 
         let values = self.parse_values()?;
 
-        if !self.sql_parser.is_end() && self.sql_parser.current_char() != ';' {
+        if self.tokenizer.current_token().token_type() != TokenType::EOF {
             return Err(format!(
                 "Syntax error, `;` expected but `{}` was found.",
-                self.sql_parser.current_char()
+                self.tokenizer.current_token().value()
             ));
         }
 
@@ -338,30 +257,26 @@ impl<'a> InsertStmtParser<'a> {
     }
 
     fn parse_inserted_fields(&mut self) -> Result<Vec<String>, String> {
-        self.sql_parser.skip_white_spaces();
         let mut fields = Vec::<String>::new();
-        if self.sql_parser.current_char() == '(' {
-            self.sql_parser.advance(); // skip '('
-            while !self.sql_parser.is_end() {
-                let field = self.sql_parser.read_token()?;
-                check_valid_field_name(&field)?;
-                check_key_word(&field)?;
-                fields.push(field);
-                self.sql_parser.skip_white_spaces();
-                if !self.sql_parser.is_end() && self.sql_parser.current_char() == ',' {
-                    self.sql_parser.advance();
-                } else if !self.sql_parser.is_end() && self.sql_parser.current_char() == ')' {
+
+        if self.tokenizer.next_token()?.token_type() == TokenType::Lparen {
+            self.tokenizer.next_token()?;
+            while self.tokenizer.has_more() {
+                let field = self.tokenizer.current_token().value();
+                fields.push(field.to_string());
+                self.tokenizer.next_token()?;
+                if self.tokenizer.current_token().token_type() == TokenType::COMMA {
+                    self.tokenizer.next_token()?;
+                } else if self.tokenizer.current_token().token_type() == TokenType::Rparen {
                     break;
                 }
-                self.sql_parser.skip_white_spaces();
             }
-
-            if self.sql_parser.is_end() || self.sql_parser.current_char() != ')' {
+            if self.tokenizer.current_token().token_type() != TokenType::Rparen {
                 return Err(String::from(
                     "Syntax error, inserted fields is not closed, expected a ')'",
                 ));
             }
-            self.sql_parser.advance();
+            self.tokenizer.next_token()?;
         } else {
             fields.push(String::from("*"))
         }
@@ -369,35 +284,31 @@ impl<'a> InsertStmtParser<'a> {
         Ok(fields)
     }
     fn parse_values(&mut self) -> Result<Vec<Value>, String> {
-        self.sql_parser.skip_white_spaces();
-        if self.sql_parser.is_end() || !self.sql_parser.starts_with(VALUES) {
+        if self.tokenizer.current_token().value() != VALUES {
             return Err(String::from("Syntax error, `values` is missing."));
         }
-        self.sql_parser.position += VALUES.len();
-        self.sql_parser.skip_white_spaces();
-        if !self.sql_parser.is_end() && self.sql_parser.current_char() == '(' {
-            self.sql_parser.advance(); // skip '('
+        if self.tokenizer.next_token()?.token_type() == TokenType::Lparen {
+            self.tokenizer.next_token()?; // skip '('
             let mut values = Vec::<Value>::new();
-            while !self.sql_parser.is_end() {
-                self.sql_parser.skip_white_spaces();
+            while self.tokenizer.has_more() {
                 let value = ValueParser {
-                    sql_parser: self.sql_parser,
+                    tokenizer: &mut self.tokenizer,
                 }
-                .parse()?;
+                    .parse()?;
                 values.push(value);
-                self.sql_parser.skip_white_spaces();
-                if !self.sql_parser.is_end() && self.sql_parser.current_char() == ',' {
-                    self.sql_parser.advance();
-                } else if !self.sql_parser.is_end() && self.sql_parser.current_char() == ')' {
+                self.tokenizer.next_token()?;
+                if self.tokenizer.current_token().token_type() == TokenType::COMMA {
+                    self.tokenizer.next_token()?;
+                } else if self.tokenizer.current_token().token_type() == TokenType::Rparen {
                     break;
                 }
             }
-            if self.sql_parser.is_end() || self.sql_parser.current_char() != ')' {
+            if self.tokenizer.current_token().token_type() != TokenType::Rparen {
                 return Err(String::from(
                     "Syntax error, `values` is not closed, expected a ')'",
                 ));
             }
-            self.sql_parser.advance();
+            self.tokenizer.next_token()?;
             return Ok(values);
         } else {
             return Err(String::from("Syntax error, `values` is uncompleted."));
@@ -405,58 +316,50 @@ impl<'a> InsertStmtParser<'a> {
     }
 }
 
-struct CreateStmtParser<'a> {
-    sql_parser: &'a mut SqlParser,
+struct CreateStmtParser {
+    tokenizer: Tokenizer,
 }
 
-impl<'a> CreateStmtParser<'a> {
+impl CreateStmtParser {
     fn parse(&mut self) -> Result<CreateStmt, String> {
-        self.sql_parser.position += CREATE_TABLE.len();
-        self.sql_parser.skip_white_spaces();
-
-        let table_name = self.sql_parser.parse_table_name()?;
-
-        self.sql_parser.skip_white_spaces();
-
+        if self.tokenizer.next_token()?.value() != TABLE {
+            return Err(String::from("Do you mean Create Table?"))
+        };
+        let table_name = self.tokenizer.next_token()?.value().to_string();
         let field_definitions = self.parse_field_definitions()?;
 
         Ok(CreateStmt::new(table_name, field_definitions))
     }
 
     fn parse_field_definitions(&mut self) -> Result<Vec<FieldDefinition>, String> {
-        if !self.sql_parser.is_end() && self.sql_parser.current_char() == '(' {
-            self.sql_parser.advance();
+        if self.tokenizer.next_token()?.token_type() == TokenType::Lparen {
             let mut field_definitions = Vec::<FieldDefinition>::new();
 
-            while !self.sql_parser.is_end() {
-                self.sql_parser.skip_white_spaces();
-                let field = self.sql_parser.read_token()?;
+            while self.tokenizer.has_more() {
+                let field = self.tokenizer.next_token()?.value().to_string();
 
                 if field.len() > FIELD_NAME_SIZE {
                     return Err(format!("Field name can not exceed {FIELD_NAME_SIZE}"));
                 }
 
-                check_valid_field_name(&field)?;
-                check_key_word(&field)?;
-                self.sql_parser.skip_white_spaces();
                 let data_type = DataTypeParser {
-                    sql_parser: self.sql_parser,
-                }
-                .parse()?;
-                self.sql_parser.skip_white_spaces();
+                    tokenizer: &mut self.tokenizer,
+                }.parse()?;
 
-                let primary = self.sql_parser.starts_with(PRIMARY);
+                let primary = self.tokenizer.current_token().value() == PRIMARY;
+                let key= self.tokenizer.next_token()?.value() == KEY;
 
-                if primary {
-                    self.sql_parser.position += PRIMARY.len();
-                    self.sql_parser.skip_white_spaces();
+                if primary && key {
+                    self.tokenizer.next_token()?;
+                } else if primary && !key {
+                    return Err(String::from("Do you mean PRIMARY KEY?"))
                 }
 
                 field_definitions.push(FieldDefinition::new(field, data_type, primary));
 
-                if !self.sql_parser.is_end() && self.sql_parser.current_char() == ',' {
-                    self.sql_parser.advance();
-                } else if !self.sql_parser.is_end() && self.sql_parser.current_char() == ')' {
+                if self.tokenizer.current_token().token_type() == TokenType::COMMA {
+                    continue
+                } else if [TokenType::Rparen, TokenType::EOF].contains(&self.tokenizer.current_token().token_type()) {
                     break;
                 } else {
                     return Err(String::from(
@@ -482,38 +385,30 @@ impl<'a> CreateStmtParser<'a> {
 }
 
 struct OrderByExprParser<'a> {
-    sql_parser: &'a mut SqlParser,
+    tokenizer: &'a mut Tokenizer,
 }
 
 impl<'a> OrderByExprParser<'a> {
     pub(crate) fn parse(&mut self) -> Result<OrderByCluster, String> {
-        self.sql_parser.skip_white_spaces();
-
-        if !self.sql_parser.starts_with(ORDER_BY) {
+        if self.tokenizer.current_token().value() != ORDER || self.tokenizer.next_token()?.value() != BY {
             return Err(format!(
                 "Syntax error, expect `order by`, but found {}",
-                self.sql_parser.read_token()?
+                self.tokenizer.current_token().value()
             ));
         }
 
-        self.sql_parser.position += ORDER_BY.len();
-
-        self.sql_parser.skip_white_spaces();
-
         let mut order_bys = Vec::<OrderByExpr>::new();
 
-        while !self.sql_parser.is_end() {
-            let field = self.sql_parser.read_token()?;
-            check_valid_field_name(&field)?;
-            check_key_word(&field)?;
-            self.sql_parser.skip_white_spaces();
+        while self.tokenizer.has_more() {
+            let field = self.tokenizer.next_token()?.value().to_string();
+            self.tokenizer.next_token()?;
             let order: Order;
-            if self.sql_parser.is_end() || self.sql_parser.current_char() == ',' {
+            if !self.tokenizer.has_more() || self.tokenizer.current_token().token_type() == TokenType::COMMA {
                 order = Order::ASC;
             } else {
-                order = Order::try_from(self.sql_parser.read_token()?.as_str())?;
+                order = Order::try_from(self.tokenizer.current_token().value())?;
+                self.tokenizer.next_token()?;
             }
-            self.sql_parser.advance();
             order_bys.push(OrderByExpr::new(field, order));
         }
 
@@ -524,20 +419,27 @@ impl<'a> OrderByExprParser<'a> {
 }
 
 struct ValueParser<'a> {
-    sql_parser: &'a mut SqlParser,
+    tokenizer: &'a mut Tokenizer
 }
 
 impl<'a> ValueParser<'a> {
     fn parse(&mut self) -> Result<Value, String> {
-        match self.sql_parser.current_char() {
-            '[' => self.parse_array(),
-            '\"' => self.parse_string(),
-            '0'..='9' | '+' | '-' => self.parse_number(),
-            't' | 'f' => self.parse_boolean(),
+        let v = self.tokenizer.current_token().value();
+        match self.tokenizer.current_token().token_type() {
+            TokenType::LeftBracket => self.parse_array(),
+            TokenType::StringLiteral => Ok(Value::TEXT(v[1..v.len() - 1].to_string())),
+            TokenType::Number => {
+                let number_str = v;
+                if number_str.contains('.') {
+                    return Ok(Value::FLOAT(number_str.parse().unwrap()))
+                }
+                Ok(Value::INT(number_str.parse().unwrap()))
+            },
+            TokenType::Boolean => Ok(Value::BOOL(v.to_lowercase() == "true")),
             _ => {
                 return Err(format!(
                     "Unknown type of value `{}` detected.",
-                    self.sql_parser.read_token()?
+                    v
                 ));
             }
         }
@@ -545,16 +447,15 @@ impl<'a> ValueParser<'a> {
 
     fn parse_array(&mut self) -> Result<Value, String> {
         let mut array = Vec::<Value>::new();
-        self.sql_parser.advance(); // skip '['
+        self.tokenizer.next_token()?; // skip '['
 
-        while !self.sql_parser.is_end() && self.sql_parser.current_char() != ']' {
-            self.sql_parser.skip_white_spaces();
+        while self.tokenizer.has_more() && self.tokenizer.current_token().token_type() != TokenType::RightBracket {
             let value = self.parse()?;
             match value {
                 Value::ARRAY(_) => {
                     return Err(String::from(
                         "An array must contain only primitive values. But array detected.",
-                    ))
+                    ));
                 }
                 _ => {}
             }
@@ -566,177 +467,73 @@ impl<'a> ValueParser<'a> {
             }
 
             array.push(value);
-            self.sql_parser.skip_white_spaces();
-            if !self.sql_parser.is_end() && self.sql_parser.current_char() == ',' {
-                self.sql_parser.advance();
+
+            if self.tokenizer.current_token().token_type() != TokenType::COMMA {
+                self.tokenizer.next_token()?;
             }
         }
 
-        if self.sql_parser.is_end() || self.sql_parser.current_char() != ']' {
+        if !self.tokenizer.has_more() || self.tokenizer.current_token().token_type() != TokenType::RightBracket {
             return Err(String::from(
                 "Detected an array value, but it is not closed. ']' is expected.",
             ));
         }
 
-        self.sql_parser.advance(); // skip ']'
+        self.tokenizer.next_token()?;
         Ok(Value::ARRAY(array))
-    }
-
-    fn parse_string(&mut self) -> Result<Value, String> {
-        self.sql_parser.advance(); // skip '"'
-        let mut token = String::new();
-        while !self.sql_parser.is_end() {
-            if self.sql_parser.current_char() != '"' {
-                token.push(self.sql_parser.current_char());
-            } else {
-                self.sql_parser.advance(); // skip '"'
-                return Ok(Value::STRING(token));
-            }
-            self.sql_parser.advance();
-        }
-
-        Err(String::from("String value parse failed."))
-    }
-
-    fn parse_number(&mut self) -> Result<Value, String> {
-        let negative = self.sql_parser.current_char() == '-';
-        let sign: i32 = if negative { -1 } else { 1 };
-        if negative || self.sql_parser.current_char() == '+' {
-            self.sql_parser.advance();
-        }
-        let mut result: Value = self.parse_int()?;
-        if let Value::INTEGER(first_part) = result {
-            if !self.sql_parser.is_end() && self.sql_parser.current_char() == '.' {
-                self.sql_parser.advance();
-                let mut base = 1.0;
-                if let Value::INTEGER(nb) = self.parse_int()? {
-                    let second_part = nb as f32;
-                    while second_part / base > 1.0 {
-                        base *= 10.0
-                    }
-                    result = Value::FLOAT(sign as f32 * (first_part as f32 + second_part / base))
-                }
-            } else {
-                result = Value::INTEGER(sign * first_part)
-            }
-        }
-        Ok(result)
-    }
-
-    pub(crate) fn parse_boolean(&mut self) -> Result<Value, String> {
-        if self.sql_parser.starts_with("true") {
-            self.sql_parser.position += "true".len();
-            return Ok(Value::BOOLEAN(true));
-        } else if self.sql_parser.starts_with("false") {
-            self.sql_parser.position += "false".len();
-            return Ok(Value::BOOLEAN(false));
-        };
-        Err(format!(
-            "Unknown type of value `{}` detected",
-            self.sql_parser.read_token()?
-        ))
-    }
-
-    fn parse_int(&mut self) -> Result<Value, String> {
-        match self.sql_parser.current_char() {
-            '0'..='9' => {
-                let mut result = 0;
-                while !self.sql_parser.is_end()
-                    && ('0'..='9').contains(&self.sql_parser.current_char())
-                {
-                    result =
-                        result * 10 + ValueParser::char_to_integer(self.sql_parser.current_char());
-                    self.sql_parser.advance();
-                }
-                return Ok(Value::INTEGER(result));
-            }
-            _ => Err(String::from("Integer parse failed")),
-        }
-    }
-
-    fn char_to_integer(c: char) -> i32 {
-        c as i32 - 0x30
     }
 }
 
 struct OperatorParser<'a> {
-    sql_parser: &'a mut SqlParser,
+    tokenizer: &'a mut Tokenizer,
 }
 
 impl<'a> OperatorParser<'a> {
     fn parse(&mut self) -> Result<Operator, String> {
-        self.sql_parser.skip_white_spaces();
         let mut operator = String::new();
 
-        if !self.sql_parser.is_end() && self.sql_parser.starts_with(NOT) {
+        if self.tokenizer.has_more() && self.tokenizer.current_token().value() == NOT {
             operator.push_str("not ");
-            self.sql_parser.position += NOT.len();
-            self.sql_parser.skip_white_spaces();
+            self.tokenizer.next_token()?;
         }
 
-        if !self.sql_parser.is_end() && self.sql_parser.starts_with("in ") {
+        if self.tokenizer.has_more() && self.tokenizer.current_token().value() == IN {
             operator.push_str("in");
-            self.sql_parser.position += "in".len();
+            self.tokenizer.next_token()?;
         } else {
-            while !self.sql_parser.is_end()
-                && OPERATORS_SYMBOLS.contains(&self.sql_parser.current_char())
-            {
-                operator.push(self.sql_parser.current_char());
-                self.sql_parser.advance();
-            }
+            operator.push_str(self.tokenizer.current_token().value());
         }
         Operator::try_from(operator)
     }
 }
 
 struct DataTypeParser<'a> {
-    sql_parser: &'a mut SqlParser,
+    tokenizer: &'a mut Tokenizer,
 }
 
 impl<'a> DataTypeParser<'a> {
     fn parse(&mut self) -> Result<DataType, String> {
-        let data_type = self.sql_parser.read_token()?;
-        self.sql_parser.skip_white_spaces();
+        let data_type = self.tokenizer.next_token()?.value().to_lowercase();
 
         if data_type == "text" {
             let mut size: usize = 255;
-            if !self.sql_parser.is_end() && self.sql_parser.current_char() == '(' {
-                self.sql_parser.advance(); // skip '('
-                size = self.sql_parser.read_token()?.parse().unwrap_or(255);
-                self.sql_parser.skip_white_spaces();
-                if self.sql_parser.is_end() || self.sql_parser.current_char() != ')' {
+            if self.tokenizer.next_token()?.token_type() == TokenType::Lparen {
+                size = self.tokenizer.next_token()?.value().parse().unwrap_or(255);
+                if self.tokenizer.next_token()?.token_type() != TokenType::Rparen {
                     return Err(String::from("Syntax error, expected a ')'."));
                 }
-                self.sql_parser.advance();
             }
 
+            self.tokenizer.next_token()?; // skip ")"
             Ok(DataType::TEXT(size))
         } else {
+            self.tokenizer.next_token()?;
             match data_type.as_str() {
-                "integer" => Ok(DataType::INTEGER),
+                "int" => Ok(DataType::INTEGER),
                 "float" => Ok(DataType::FLOAT),
-                "boolean" => Ok(DataType::BOOLEAN),
+                "bool" => Ok(DataType::BOOLEAN),
                 _ => Err(format!("Unknown data type `{}` was found.", data_type)),
             }
         }
     }
-}
-
-fn check_key_word(k: &String) -> Result<(), String> {
-    match !is_key_words(k) {
-        true => Ok(()),
-        false => Err(format!("You can not use keyword `{}` as a field.", k)),
-    }
-}
-
-fn check_valid_field_name(k: &String) -> Result<(), String> {
-    if k.chars().next().unwrap().is_numeric() {
-        return Err(format!("Field name `{}` is invalid", k));
-    }
-    for c in k.chars() {
-        if !c.is_numeric() && (c < 'a' || c > 'z') && c != '_' {
-            return Err(format!("Field name `{}` is invalid", k));
-        }
-    }
-    Ok(())
 }

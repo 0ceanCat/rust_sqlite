@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::cmp::{max, PartialEq};
+use std::cmp::max;
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
@@ -106,7 +106,7 @@ impl Table for BtreeTable {
                     last_op = Some(last_op.unwrap().combine(cluster.logical_operator));
                 }
             } else {
-                let mut set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
+                let set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
                 result = vec![];
                 for r in cluster_result {
                     if set.contains(&r) {
@@ -150,7 +150,7 @@ impl Table for BtreeTable {
                             last_op = Some(last_op.unwrap().combine(cluster.logical_operator))
                         }
                     } else {
-                        let mut set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
+                        let set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
                         result = vec![];
                         for r in cluster_result {
                             if set.contains(&r) {
@@ -970,7 +970,7 @@ impl Table for SequentialTable {
                     last_op = Some(last_op.unwrap().combine(cluster.logical_operator));
                 }
             } else {
-                let mut set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
+                let set: HashSet<RowBytes> = HashSet::from_iter(result.into_iter());
                 result = vec![];
                 for r in cluster_result {
                     if set.contains(&r) {

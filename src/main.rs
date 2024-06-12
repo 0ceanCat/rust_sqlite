@@ -9,10 +9,10 @@ mod utils;
 fn main() -> Result<(), String> {
     let mut table_manager = TableManager::new();
     loop {
-        let input = new_input_buffer();
+        let input= new_input_buffer();
 
         if input == "flush;" {
-            table_manager.flash_to_disk();
+            table_manager.flush_to_disk();
             continue;
         } else if input.starts_with("btree;") {
             table_manager.print_btree(input.split_once(" ").unwrap().1);
