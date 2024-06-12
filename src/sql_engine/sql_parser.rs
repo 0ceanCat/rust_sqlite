@@ -136,6 +136,8 @@ impl<'a> WhereStmtParser<'a> {
 
             if self.tokenizer.current_token().value() == ORDER {
                 break;
+            } else if self.tokenizer.current_token().token_type() == TokenType::EOF {
+                break;
             }
 
             logical_op = Some(LogicalOperator::try_from(
@@ -388,20 +390,20 @@ struct OrderByExprParser<'a> {
 
 impl<'a> OrderByExprParser<'a> {
     pub(crate) fn parse(&mut self) -> Result<OrderByCluster, String> {
-        if self.tokenizer.current_token().value() != ORDER && self.tokenizer.next_token()?.value() != BY {
+        if self.tokenizer.current_token().value() != ORDER || self.tokenizer.next_token()?.value() != BY {
             return Err(format!(
                 "Syntax error, expect `order by`, but found {}",
                 self.tokenizer.current_token().value()
             ));
         }
-        self.tokenizer.next_token()?;
 
         let mut order_bys = Vec::<OrderByExpr>::new();
 
         while self.tokenizer.has_more() {
             let field = self.tokenizer.next_token()?.value().to_string();
+            self.tokenizer.next_token()?;
             let order: Order;
-            if !self.tokenizer.has_more() || self.tokenizer.next_token()?.token_type() == TokenType::COMMA {
+            if !self.tokenizer.has_more() || self.tokenizer.current_token().token_type() == TokenType::COMMA {
                 order = Order::ASC;
             } else {
                 order = Order::try_from(self.tokenizer.current_token().value())?;
