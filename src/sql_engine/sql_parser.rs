@@ -228,7 +228,6 @@ struct InsertStmtParser {
 
 impl InsertStmtParser {
     fn parse(&mut self) -> Result<InsertStmt, String> {
-        self.tokenizer.next_token()?;
         if self.tokenizer.next_token()?.value() != "INTO" {
             return Err(String::from("Do you mean INERT INTO?"))
         }
@@ -239,7 +238,7 @@ impl InsertStmtParser {
 
         let values = self.parse_values()?;
 
-        if self.tokenizer.current_token().token_type() != TokenType::COMMA {
+        if self.tokenizer.current_token().token_type() != TokenType::EOF {
             return Err(format!(
                 "Syntax error, `;` expected but `{}` was found.",
                 self.tokenizer.current_token().value()
@@ -270,7 +269,6 @@ impl InsertStmtParser {
                     break;
                 }
             }
-            self.tokenizer.next_token()?;
             if self.tokenizer.current_token().token_type() != TokenType::Rparen {
                 return Err(String::from(
                     "Syntax error, inserted fields is not closed, expected a ')'",
@@ -287,8 +285,7 @@ impl InsertStmtParser {
         if self.tokenizer.current_token().value() != VALUES {
             return Err(String::from("Syntax error, `values` is missing."));
         }
-        self.tokenizer.next_token()?;
-        if self.tokenizer.current_token().token_type() == TokenType::Lparen {
+        if self.tokenizer.next_token()?.token_type() == TokenType::Lparen {
             self.tokenizer.next_token()?; // skip '('
             let mut values = Vec::<Value>::new();
             while self.tokenizer.has_more() {
@@ -297,6 +294,7 @@ impl InsertStmtParser {
                 }
                     .parse()?;
                 values.push(value);
+                self.tokenizer.next_token()?;
                 if self.tokenizer.current_token().token_type() == TokenType::COMMA {
                     self.tokenizer.next_token()?;
                 } else if self.tokenizer.current_token().token_type() == TokenType::Rparen {
@@ -427,7 +425,7 @@ impl<'a> ValueParser<'a> {
         let v = self.tokenizer.current_token().value();
         match self.tokenizer.current_token().token_type() {
             TokenType::LeftBracket => self.parse_array(),
-            TokenType::StringLiteral => Ok(Value::TEXT(v.to_string())),
+            TokenType::StringLiteral => Ok(Value::TEXT(v[1..v.len() - 1].to_string())),
             TokenType::Number => {
                 let number_str = v;
                 if number_str.contains('.') {
