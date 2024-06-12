@@ -118,7 +118,7 @@ impl TableManager {
         Ok(tm)
     }
 
-    pub fn flash_to_disk(&mut self) {
+    pub fn flush_to_disk(&mut self) {
         for (_, tables) in self.tables.values_mut() {
             tables.iter_mut().for_each(|t| t.flush_to_disk())
         }
